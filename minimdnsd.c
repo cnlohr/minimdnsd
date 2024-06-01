@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <ifaddrs.h>
+#include <errno.h>
 
 // For detecting interfaces going away or coming back.
 #include <linux/netlink.h>
@@ -29,7 +30,7 @@ int AddMDNSInterface4( struct in_addr * saddr )
 	if( setsockopt( sd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) == -1)
 	{
 		char * addr = inet_ntoa( *saddr );
-		fprintf( stderr, "WARNING: Could not join membership to %s\n", addr );
+		fprintf( stderr, "WARNING: Could not join membership to %s / code %d\n", addr, errno );
 		return -1;
 	}
 	return 0;
@@ -43,6 +44,42 @@ int IsAddressLocal( struct in_addr * testaddr )
 	if( ( check & 0xfff00000 ) == 0xac100000 ) return 1; // 172.[16-31].x.x
 	if( ( check & 0xffff0000 ) == 0xc0a80000 ) return 1; // 192.168.x.x
 	if( ( check & 0xffff0000 ) == 0xa9fe0000 ) return 1; // 169.254.x.x (RFC5735)
+	return 0;
+}
+
+int IsAddress6Local( struct in6_addr * addr )
+{
+	return IN6_IS_ADDR_LINKLOCAL( addr ) || IN6_IS_ADDR_SITELOCAL( addr ) || ( addr->s6_addr[0] == 0xfd && addr->s6_addr[1] == 0xdc );
+}
+
+int CheckAndAddMulticast( struct sockaddr * addr )
+{
+	if ( !addr )
+	{
+		return -1;
+	}
+
+	int family = addr->sa_family;
+
+	if( family == AF_INET )
+	{
+		char addrbuff[INET_ADDRSTRLEN+10] = { 0 }; // Actually 46 for IPv6, but let's add some buffer.
+		struct sockaddr_in * sa4 = (struct sockaddr_in*)addr;
+		const char * addrout = inet_ntop( family, &sa4->sin_addr, addrbuff, sizeof( addrbuff ) - 1 );
+		int local = IsAddressLocal( &sa4->sin_addr );
+		if( !local ) return -2;
+		printf( "Multicast adding address: %s\n", addrout );
+		AddMDNSInterface4( &sa4->sin_addr );
+	}
+	else if( family == AF_INET6 )
+	{
+		char addrbuff[INET6_ADDRSTRLEN+10] = { 0 }; // Actually 46 for IPv6, but let's add some buffer.
+		struct sockaddr_in6 * sa6 = (struct sockaddr_in6 *)addr;
+		const char * addrout = inet_ntop( family, &sa6->sin6_addr, addrbuff, sizeof( addrbuff ) - 1 );
+		int local = IsAddress6Local( &sa6->sin6_addr );
+		if( !local ) return -3;
+		printf( "LOCAL: %s, but join not written yet\n", addrout );
+	}
 	return 0;
 }
 
@@ -61,30 +98,7 @@ int HandleRequestingInterfaces()
 		for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
 		{
 			struct sockaddr * addr = ifa->ifa_addr;
-			int family = addr->sa_family;
-			if ( !addr )
-			{
-				continue;
-			}
-			if( addr->sa_family == AF_INET )
-			{
-				char addrbuff[INET_ADDRSTRLEN+10] = { 0 }; // Actually 46 for IPv6, but let's add some buffer.
-				struct sockaddr_in * sa4 = (struct sockaddr_in*)addr;
-				const char * addrout = inet_ntop( family, &sa4->sin_addr, addrbuff, sizeof( addrbuff ) - 1 );
-				int local = IsAddressLocal( &sa4->sin_addr );
-				if( !local ) continue;
-				printf( "Multicast adding address: %s\n", addrout );
-				AddMDNSInterface4( &sa4->sin_addr );
-			}
-			else if( addr->sa_family == AF_INET6 )
-			{
-				char addrbuff[INET6_ADDRSTRLEN+10] = { 0 }; // Actually 46 for IPv6, but let's add some buffer.
-				struct sockaddr_in6 * sa6 = (struct sockaddr_in6 *)addr;
-				const char * addrout = inet_ntop( family, &sa6->sin6_addr, addrbuff, sizeof( addrbuff ) - 1 );
-				int local = IN6_IS_ADDR_LINKLOCAL( &sa6->sin6_addr ) || IN6_IS_ADDR_SITELOCAL( &sa6->sin6_addr ) || sa6->sin6_addr.s6_addr[0] == 0xfd;
-				if( !local ) continue;
-				printf( "LOCAL: %s, but join not written yet\n", addrout );
-			}
+			CheckAndAddMulticast( addr );
 		}
 	}
 	return 0;
@@ -113,7 +127,7 @@ int main (int argc, char *argv[] )
 		struct sockaddr_nl addr;
 		memset(&addr, 0, sizeof(addr));
 		addr.nl_family = AF_NETLINK;
-		addr.nl_groups = RTMGRP_IPV4_IFADDR;
+		addr.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
 		if (bind( sdifaceupdown, (struct sockaddr *)&addr, sizeof(addr)) == -1)
 		{
 			fprintf( stderr, "WARNING: couldn't bind looking for address changes\n" );
@@ -157,7 +171,54 @@ int main (int argc, char *argv[] )
 
 	while( 1 )
 	{
+		{
+			int len;
+			struct nlmsghdr *nlh;
+			char buffer[4096];
+			nlh = (struct nlmsghdr *)buffer;
+			while ( ( len = recv( sdifaceupdown, nlh, 4096, 0 ) ) > 0 )
+			{
+				// technique is based around https://stackoverflow.com/a/2353441/2926815
+				while ( ( NLMSG_OK( nlh, len ) ) && ( nlh->nlmsg_type != NLMSG_DONE ) )
+				{
+					if ( nlh->nlmsg_type == RTM_NEWADDR )
+					{
+						struct ifaddrmsg *ifa = (struct ifaddrmsg *) NLMSG_DATA( nlh );
+						struct rtattr *rth = IFA_RTA( ifa );
 
+						int rtl = IFA_PAYLOAD( nlh );
+
+						while ( rtl && RTA_OK( rth, rtl ) )
+						{
+							printf( "Event Type: %d\n", rth->rta_type );
+							if ( /*rth->rta_type == IFA_LOCAL || */ rth->rta_type == IFA_ADDRESS )
+							{
+								char name[IFNAMSIZ] = { 0 };
+								if_indextoname( ifa->ifa_index, name );
+								printf( "Update Device: %s / Family %d\n", name, ifa->ifa_family );
+								int pld = RTA_PAYLOAD(rth);
+								if( ifa->ifa_family == AF_INET6 )
+								{
+									struct sockaddr_in6 sai = { 0 };
+									sai.sin6_family = AF_INET6;
+									memcpy( &sai.sin6_addr, RTA_DATA(rth), pld );
+									CheckAndAddMulticast( (struct sockaddr*)&sai );
+								}
+								else if( ifa->ifa_family == AF_INET )
+								{
+									struct sockaddr_in sai = { 0 };
+									sai.sin_family = AF_INET;
+									memcpy( &sai.sin_addr, RTA_DATA(rth), pld );
+									CheckAndAddMulticast( (struct sockaddr*)&sai );
+								}
+							}
+							rth = RTA_NEXT( rth, rtl );
+						}
+					}
+					nlh = NLMSG_NEXT( nlh, len );
+				}
+			}
+		}
 /*
 		struct if_nameindex *if_nidxs, *intf;
 		if_nidxs = if_nameindex();
