@@ -32,6 +32,8 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
 
 ### Build process
  * `make`
+optionally
+ * `make install` to install it to /usr/local/bin/minimdnsd
 
 ## Things I learned
 
