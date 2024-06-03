@@ -29,6 +29,8 @@
 //  * Use of multicast in IPv4 and IPv6 to join a multicast group
 //  * Leveraging `poll` to have programs that are completely asleep when not
 //    actively needed.
+//  * Use of `recvmsg` to get the interface and address that a UDP packet is
+//    received on
 //  * But it does implement a fully function mnds server that advertises your
 //    host to other peers on your LAN!
 
@@ -273,7 +275,7 @@ static inline void HandleNetlinkData()
 
 // MDNS functions from esp32xx
 
-uint8_t * ParseMDNSPath( uint8_t * dat, char * topop, int * len )
+uint8_t * ParseMDNSPath( uint8_t * dat, uint8_t * dataend, char * topop, int * len )
 {
 	int l;
 	int j;
@@ -281,7 +283,7 @@ uint8_t * ParseMDNSPath( uint8_t * dat, char * topop, int * len )
 	do
 	{
 		l = *(dat++);
-		if( l == 0 )
+		if( l == 0 || dat == dataend )
 		{
 			*topop = 0;
 			return dat;
@@ -395,10 +397,6 @@ static inline void HandleRX( int sock )
 			//printf( "\n" );
 		}
 #endif
-		else
-		{
-			printf( "%d %d  %d %d\n", cmsg->cmsg_level, cmsg->cmsg_type,IPPROTO_IPV6, IPV6_RECVPKTINFO );
-		}
 	}
 
 	uint16_t * psr = (uint16_t*)buffer;
@@ -420,8 +418,9 @@ static inline void HandleRX( int sock )
 	{
 		uint8_t * namestartptr = dataptr;
 		//Work our way through.
-		dataptr = ParseMDNSPath( dataptr, path, &stlen );
+		dataptr = ParseMDNSPath( dataptr, dataend, path, &stlen );
 
+		// Make sure there is still room left for the rest of the record.
 		if( dataend - dataptr < 4 ) return;
 
 		if( !dataptr )

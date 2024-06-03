@@ -23,6 +23,7 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
 <li>Use of `getifaddrs` to iterate through all available interfaces</li>
 <li>Use of `NETLINK_ROUTE` and `RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR` to monitor for any new network interfaces or addresses.
 <li>Use of multicast in IPv4 and IPv6 to join a multicast group<li>
+<li>Use of `recvmsg` to get the interface and address that a UDP packet is received on</li>
 </ol>
 </ol>
 
