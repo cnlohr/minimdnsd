@@ -3,8 +3,6 @@ Description=minimdnsd server
 
 [Service]
 Type=simple
-StandardOutput=journal+console
-StandardError=journal+console
 ExecStart=minimdnsd
 
 
