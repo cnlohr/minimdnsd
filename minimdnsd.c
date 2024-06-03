@@ -467,6 +467,7 @@ static inline void HandleRX( int sock )
 #else
 			int sendAAAA = 0;
 #endif
+
 			if( sendA || sendAAAA )
 			{
 				*(obb++) = xactionid;
