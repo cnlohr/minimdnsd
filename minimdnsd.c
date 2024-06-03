@@ -1,8 +1,10 @@
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <net/if.h>
 #include <string.h>
@@ -12,6 +14,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <linux/in6.h>
+#include <limits.h>
 
 // For detecting interfaces going away or coming back.
 #include <linux/netlink.h>
@@ -19,15 +22,26 @@
 
 
 #define MAX_MDNS_NAMES 1
-#define MAX_MDNS_PATH 32
+
+char	hostname[HOST_NAME_MAX+1];
+time_t	hosttime = -1;
+int		hostnamelen = 0;
+
+
+struct sockaddr_in * sockaddrListByIFace4;
+int    maxIFaceList4;
+struct sockaddr_in6 * sockaddrListByIFace6;
+int    maxIFaceList6;
+
+#define MAX_MDNS_PATH (HOST_NAME_MAX+8)
 
 #define MDNS_PORT 5353
 
 struct in_addr localInterface;
 struct sockaddr_in groupSock;
 
-int sd;
-int sd6;
+int sdsock;
+int is_bound_6;
 int sdifaceupdown;
 
 int AddMDNSInterface4( struct in_addr * saddr )
@@ -35,7 +49,7 @@ int AddMDNSInterface4( struct in_addr * saddr )
 	struct ip_mreq mreq;
 	mreq.imr_multiaddr.s_addr = inet_addr( "224.0.0.251" );
 	memcpy( &mreq.imr_interface, saddr, sizeof( *saddr ) );
-	if ( setsockopt( sd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) == -1)
+	if ( setsockopt( sdsock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) == -1)
 	{
 		char * addr = inet_ntoa( *saddr );
 		fprintf( stderr, "WARNING: Could not join membership to %s / code %d (%s)\n", addr, errno, strerror(errno) );
@@ -57,7 +71,7 @@ int IsAddressLocal( struct in_addr * testaddr )
 
 int IsAddress6Local( struct in6_addr * addr )
 {
-	return IN6_IS_ADDR_LINKLOCAL( addr ) || IN6_IS_ADDR_SITELOCAL( addr ) || ( addr->s6_addr[0] == 0xfd && addr->s6_addr[1] == 0xdc );
+	return IN6_IS_ADDR_LINKLOCAL( addr ) || IN6_IS_ADDR_SITELOCAL( addr );
 }
 
 int CheckAndAddMulticast( struct sockaddr * addr )
@@ -136,16 +150,28 @@ static inline void HandleNetlinkData()
 				{
 					if ( /*rth->rta_type == IFA_LOCAL || */ rth->rta_type == IFA_ADDRESS )
 					{
+						int ifindex = ifa->ifa_index;
 						char name[IFNAMSIZ] = { 0 };
 						if_indextoname( ifa->ifa_index, name );
 						//printf( "Update Device: %s / Family %d\n", name, ifa->ifa_family );
 						int pld = RTA_PAYLOAD(rth);
+
+						// Record the index.
 						if ( ifa->ifa_family == AF_INET6 )
 						{
 							struct sockaddr_in6 sai = { 0 };
 							sai.sin6_family = AF_INET6;
+							sai.sin6_scope_id = ifindex;
 							memcpy( &sai.sin6_addr, RTA_DATA(rth), pld );
 							CheckAndAddMulticast( (struct sockaddr*)&sai );
+							if( ifindex >= maxIFaceList6 )
+							{
+								int newlen = ifindex + 1;
+								sockaddrListByIFace6 = realloc( sockaddrListByIFace6, newlen * sizeof( sai ) );
+								memset( sockaddrListByIFace6 + maxIFaceList6, 0, sizeof( sai ) * (newlen - maxIFaceList6) );
+								maxIFaceList6 = newlen;
+							}
+							memcpy( &sockaddrListByIFace6[ifindex], &sai, sizeof( sai ) );
 						}
 						else if ( ifa->ifa_family == AF_INET )
 						{
@@ -153,6 +179,14 @@ static inline void HandleNetlinkData()
 							sai.sin_family = AF_INET;
 							memcpy( &sai.sin_addr, RTA_DATA(rth), pld );
 							CheckAndAddMulticast( (struct sockaddr*)&sai );
+							if( ifindex >= maxIFaceList4 )
+							{
+								int newlen = ifindex + 1;
+								sockaddrListByIFace4 = realloc( sockaddrListByIFace4, newlen * sizeof( sai ) );
+								memset( sockaddrListByIFace4 + maxIFaceList4, 0, sizeof( sai ) * (newlen - maxIFaceList6) );
+								maxIFaceList4 = newlen;
+							}
+							memcpy( &sockaddrListByIFace4[ifindex], &sai, sizeof( sai ) );
 						}
 					}
 					rth = RTA_NEXT( rth, rtl );
@@ -202,80 +236,39 @@ uint8_t * ParseMDNSPath( uint8_t * dat, char * topop, int * len )
 }
 
 
-static void SendOurARecord( uint8_t * namestartptr, int xactionid, int stlen, uint32_t ourip )
-{
-	//Found match with us.
-	//Send a response.
-
-	uint8_t outbuff[MAX_MDNS_PATH+32];
-	uint8_t * obptr = outbuff;
-	uint16_t * obb = (uint16_t*)outbuff;
-	*(obb++) = xactionid;
-	*(obb++) = htons(0x8400); //Authortative response.
-	*(obb++) = 0;
-	*(obb++) = htons(1); //1 answer.
-	*(obb++) = 0;
-	*(obb++) = 0;
-
-	obptr = (uint8_t*)obb;
-	memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
-	obptr += stlen+1;
-	*(obptr++) = 0;
-	*(obptr++) = 0x00; *(obptr++) = 0x01; //A record
-	*(obptr++) = 0x80; *(obptr++) = 0x01; //Flush cache + in ptr.
-	*(obptr++) = 0x00; *(obptr++) = 0x00; //TTL
-	*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
-	*(obptr++) = 0x00; *(obptr++) = 0x04; //Size 4 (IP)
-	memcpy( obptr, &ourip, 4 );
-	obptr+=4;
-	uint32_t md = MDNS_BRD;
-	memcpy( pMDNSServer->proto.udp->remote_ip, &md, 4 );
-	espconn_sent( pMDNSServer, outbuff, obptr - outbuff );
-}
-
-
 static inline void HandleRX( int sock )
 {
-	
-	uint8_t buffer[8192];
+	uint8_t buffer[9036]; // RFC6762 Section 6.1
 	char path[MAX_MDNS_PATH];
 	int i, j, stlen;
-	struct sockaddr sender;
 
-	// This is a little tricky - so we can avoid having a separate socket for every single
-	// interface, we can instead, just recvmsg and discern which interfaces the message
-	// came frmo.
+	struct sockaddr_in6 sender = { 0 };
+	socklen_t sl = sizeof( sender );
+	int r = recvfrom( sock, buffer, sizeof(buffer), 0, (struct sockaddr*) &sender, &sl );
 
-	char ctrlbuff[512];
-//	int r = recvfrom( sd, buffer, sizeof(buffer), MSG_DONTWAIT, &sender, &address_len );
-//	if( r <= 0 ) return;
-	struct sockaddr_in peeraddr;
-	// if you want access to the data you need to init the msg_iovec fields
-	struct msghdr msghdr = {
-		.msg_name = &sender,
-		.msg_namelen = sizeof( sender ),
-		.msg_control = ctrlbuff,
-		.msg_controllen = sizeof( ctrlbuff ),
-	};
-	recvmsg(sock, &msghdr, 0);
+	if( r <= 0 )
+		return;	
 
-XXX TODO: Can we use recv here?
-	
+	for( i = 0; i < sl; i++ )
+		printf( "%02x ", ((uint8_t*)&sender)[i] );
+	printf( "\n" );
+
+	int iface = htonl( sender.sin6_scope_id );
+	printf( "FAMILY: %d / %d\n", sender.sin6_family, iface );
+
 	uint16_t * psr = (uint16_t*)buffer;
 	uint16_t xactionid = ntohs( psr[0] );
 	uint16_t flags = ntohs( psr[1] );
 	uint16_t questions = ntohs( psr[2] );
 	uint16_t answers = ntohs( psr[3] );
 
-	uint8_t * dataptr = (uint8_t*)pusrdata + 12;
-	uint8_t * dataend = dataptr + len;
+	// Tricky - index 12 bytes in, we can do a direct reply.
+	uint8_t * dataptr = (uint8_t*)buffer + 12;
+	uint8_t * dataend = dataptr + r - 12;
 
+	// MDNS reply (we are a server, not a client, so discard).
 	if( flags & 0x8000 )
-	{
-		// MDNS reply (we are a server, not a client, so discard).
 		return;
-	}
-
 
 	//Query
 	for( i = 0; i < questions; i++ )
@@ -284,7 +277,7 @@ XXX TODO: Can we use recv here?
 		//Work our way through.
 		dataptr = ParseMDNSPath( dataptr, path, &stlen );
 
-		if( dataend - dataptr < 10 ) return;
+		if( dataend - dataptr < 4 ) return;
 
 		if( !dataptr )
 		{
@@ -300,6 +293,7 @@ XXX TODO: Can we use recv here?
 		{
 			continue;
 		}
+
 		uint16_t record_type = ( dataptr[0] << 8 ) | dataptr[1];
 		uint16_t record_class = ( dataptr[2] << 8 ) | dataptr[3];
 
@@ -316,6 +310,99 @@ XXX TODO: Can we use recv here?
 			path_first_dot = 0;
 
 		int found = 0;
+
+		struct stat s;
+		int d = stat( "/etc/hostname", &s );
+		if( d )
+		{
+			goto hostnamefault;
+		}
+		if( s.st_mtime != hosttime )
+		{
+			hosttime = s.st_mtime;
+			int fh = open( "/etc/hostname", O_RDONLY );
+			if( fh < 1 )
+			{
+				goto hostnamefault;
+			}
+			int rd = read( fh, hostname, HOST_NAME_MAX );
+			close( fh );
+			if( rd <= 0 )
+			{
+				goto hostnamefault;
+			}
+
+			hostnamelen = rd;
+
+			int j;
+			for( j = 0; j < rd; j++ )
+			{
+				char c = hostname[j];
+				if( c == '\n' )                 // Truncate at newline
+				{
+					hostnamelen = j;
+				}
+				else if( c >= 'A' && c <= 'Z' ) // Convert to lowercase
+				{
+					hostname[j] = c + 'z' - 'Z';
+				}
+			}
+			hostname[hostnamelen] = 0;
+		}
+
+		if( hostname[0] && dotlen && dotlen == hostnamelen && memcmp( hostname, path, dotlen ) == 0 )
+		{
+			struct sockaddr_in  * ipv4 = ( iface < maxIFaceList4 ) ? sockaddrListByIFace4 + iface : 0;
+			struct sockaddr_in6 * ipv6 = ( iface < maxIFaceList6 ) ? sockaddrListByIFace6 + iface : 0;
+
+			// Check validity.
+			if( ipv4 && !ipv4->sin_family ) ipv4 = 0;
+			if( ipv6 && !ipv6->sin6_family ) ipv6 = 0;
+
+			printf( "%d %p %p\n", iface, ipv4, ipv6 );
+
+			if( record_type == 1 /*A*/ && ipv4 ) //A Name Lookup.
+			{
+				//Found match with us.
+				//Send a response.
+
+				uint8_t outbuff[MAX_MDNS_PATH+48];
+				uint8_t * obptr = outbuff;
+				uint16_t * obb = (uint16_t*)outbuff;
+				*(obb++) = xactionid;
+				*(obb++) = htons(0x8400); //Authortative response.
+				*(obb++) = 0;
+				*(obb++) = htons(1); //1 answer.
+				*(obb++) = 0;
+				*(obb++) = 0;
+
+				obptr = (uint8_t*)obb;
+				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
+				obptr += stlen+1;
+				*(obptr++) = 0;
+				*(obptr++) = 0x00; *(obptr++) = 0x01; //A record
+				*(obptr++) = 0x80; *(obptr++) = 0x01; //Flush cache + in ptr.
+				*(obptr++) = 0x00; *(obptr++) = 0x00; //TTL
+				*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
+				*(obptr++) = 0x00; *(obptr++) = 0x04; //Size 4 (IP)
+				
+				memcpy( obptr, &ipv4->sin_addr, 4 );
+				obptr+=4;
+
+				sendto( sock, outbuff, obptr - outbuff, 0, (struct sockaddr*)&sender, sl );
+			}
+			else if( record_type == 28 /*AAAA*/ && ipv6 )
+			{
+				// XXX TODO: Figure out IPv6 Replies.
+
+			}
+
+//			else
+	//			SendSpecificService( i, namestartptr, xactionid, stlen, 1 );
+			found = 1;
+		}	
+
+/*
 		for( i = 0; i < MAX_MDNS_NAMES; i++ )
 		{
 			//Handle [hostname].local, or [hostname].[service].local
@@ -323,11 +410,15 @@ XXX TODO: Can we use recv here?
 			{
 				found = 1;
 				if( record_type == 0x0001 ) //A Name Lookup.
-					SendOurARecord( namestartptr, xactionid, stlen,  );
+					SendOurARecord( namestartptr, xactionid, stlen, 1 );
 				else
 					SendSpecificService( i, namestartptr, xactionid, stlen, 1 );
 			}
 		}
+*/
+
+
+#if 0
 
 		if( !found ) //Not a specific entry lookup...
 		{
@@ -354,42 +445,38 @@ XXX TODO: Can we use recv here?
 */
 			}
 		}
+#endif
+
 	}
+	return;
+hostnamefault:
+	fprintf( stderr, "ERROR: Can't stat /etc/hostname\n" );
+	return;
 }
 
 int main (int argc, char *argv[] )
 {
-	struct sockaddr_in sinsock = { 0 };
 	struct sockaddr_in respsock;
 
-	sd = socket( AF_INET, SOCK_DGRAM, 0 );
-	if ( sd < 0 )
+	sdsock = socket( AF_INET6, SOCK_DGRAM, 0 );
+	if ( sdsock < 0 )
 	{
-		perror("Opening datagram socket error");
-		exit(1);
+		fprintf( stderr, "Warning: Opening IPv6 datagram socket error.  Trying IPv4");
+		sdsock = socket( AF_INET, SOCK_DGRAM, 0 );
+		is_bound_6 = 0;
+	}
+	else
+	{
+		is_bound_6 = 1;
 	}
 
-	sd6 = socket( AF_INET, SOCK_DGRAM, 0 );
-	if ( sd6 < 0 )
+	// Not just avahi, but other services, too will bind to 5353, but we can use
+	// SO_REUSEPORT to allow multiple people to bind simultaneously.
+	int optval = 1;
+	if ( setsockopt( sdsock, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
 	{
-		fprintf( stderr, "Warning: Opening IPv6 datagram socket error");
-		sd6 = 0;
+		fprintf( stderr, "Warning: Could not set SO_REUSEPORT\n" );
 	}
-
-	int opt = 1;
-	if( setsockopt(sd, IPPROTO_IP, IP_PKTINFO, &opt, sizeof(opt)) != 0 )
-	{
-		fprintf( stderr, "Fatal: OS Does not support IP_PKTINFO on IPv4 socket.\n" );
-		return -9;
-	}
-
-	if( setsockopt(sd6, IPPROTO_IP, IP_PKTINFO, &opt, sizeof(opt)) != 0 )
-	{
-		fprintf( stderr, "Fatal: OS Does not support IP_PKTINFO on IPv6 socket.\n" );
-		return -9;
-	}
-
-
 
 	sdifaceupdown = socket( PF_NETLINK, SOCK_RAW, NETLINK_ROUTE );
 	if ( sdifaceupdown < 0 )
@@ -411,71 +498,33 @@ int main (int argc, char *argv[] )
 		}
 	}
 
-
-	// Bind the normal MDNS socket, that will get the messages.
-	sinsock.sin_family = AF_INET;
-	sinsock.sin_addr.s_addr = htonl( INADDR_ANY );
-	sinsock.sin_port = htons( MDNS_PORT );
-
-	if ( bind( sd, (struct sockaddr *)&sinsock, sizeof( sinsock ) ) == -1 )
+	// Bind the normal MDNS socket
+	if( is_bound_6 )
 	{
-		fprintf( stderr, "Warning: Could not bind to MDNS port\n" );
-		fprintf( stderr, "You can figure out whose fault it is with:\n" );
-		fprintf( stderr, " sudo netstat -nap | grep 5353\n" );
-		fprintf( stderr, "But, we are going to attempt to enable SO_REUSEPORT and see if we can keep going.\n" );
-
-		//fprintf( stderr, "Is avahi running? If so, you can kill it with:\n" );
-		//fprintf( stderr, " sudo systemctl disable avahi-daemon\n" );
-		//fprintf( stderr, " sudo service avahi-daemon stop\n" );
-
-
-		int optval = 1;
-		if ( setsockopt( sd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
+		struct sockaddr_in6 sin6 = {
+			.sin6_family = AF_INET6,
+			.sin6_addr = IN6ADDR_ANY_INIT,
+			.sin6_port = htons( MDNS_PORT )
+		};
+		if ( bind( sdsock, (struct sockaddr *)&sin6, sizeof(sin6) ) == -1 )
 		{
-			fprintf( stderr, "Warning: Could not set SO_REUSEPORT\n" );
-		}
-
-		if ( bind( sd, (struct sockaddr *)&sinsock, sizeof( sinsock ) ) == -1 )
-		{
-			fprintf( stderr, "Fatal: Even after attempting SO_REUSEPORT, could not bind.  Aborting\n" );
+			fprintf( stderr, "FATAL: Could not bind to IPv6 MDNS port (%d %s)\n", errno, strerror( errno ) );
 			exit(-1);
 		}
 	}
-
-
-
-
-	// Bind the normal MDNS socket (but with IPv6), that will get the messages.
-	struct sockaddr_in6 sin6 = { 0 };
-	sin6.sin6_family = AF_INET6;
-	sin6.sin6_addr.s_addr6 = IN6ADDR_ANY_INIT;
-	sin6.sin6_port = htons( MDNS_PORT );
-
-	if ( bind( sd6, (struct sockaddr *)&sin6, sizeof(sin6) ) == -1 )
+	else
 	{
-		fprintf( stderr, "Warning: Could not bind to MDNS port\n" );
-		fprintf( stderr, "You can figure out whose fault it is with:\n" );
-		fprintf( stderr, " sudo netstat -nap | grep 5353\n" );
-		fprintf( stderr, "But, we are going to attempt to enable SO_REUSEPORT and see if we can keep going.\n" );
-
-		//fprintf( stderr, "Is avahi running? If so, you can kill it with:\n" );
-		//fprintf( stderr, " sudo systemctl disable avahi-daemon\n" );
-		//fprintf( stderr, " sudo service avahi-daemon stop\n" );
-
-
-		int optval = 1;
-		if ( setsockopt( sd6, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
+		struct sockaddr_in sin = {
+			.sin_family = AF_INET,
+			.sin_addr = INADDR_ANY,
+			.sin_port = htons( MDNS_PORT )
+		};
+		if ( bind( sdsock, (struct sockaddr *)&sin, sizeof(sin) ) == -1 )
 		{
-			fprintf( stderr, "Warning: Could not set SO_REUSEPORT\n" );
-		}
-
-		if ( bind( sd6, (struct sockaddr *)&sin6, sizeof( sin6 ) ) == -1 )
-		{
-			fprintf( stderr, "Fatal: Even after attempting SO_REUSEPORT, could not bind.  Aborting\n" );
+			fprintf( stderr, "FATAL: Could not bind to IPv4 MDNS port (%d %s)\n", errno, strerror( errno ) );
 			exit(-1);
 		}
 	}
-
 
 	char ** lastiplist = 0;
 
@@ -500,13 +549,12 @@ int main (int argc, char *argv[] )
 
 	while ( 1 )
 	{
-		struct pollfd fds[3] = {
-			{ .fd = sd, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
+		struct pollfd fds[2] = {
+			{ .fd = sdsock, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 			{ .fd = sdifaceupdown, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
-			{ .fd = sd6, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 		};
 
-		int socks = ( sd6 ) ? 3 : 2;
+		int socks = 2;
 
 		// Make poll wait for literally forever.
 		r = poll( fds, socks, -1 );
@@ -521,24 +569,10 @@ int main (int argc, char *argv[] )
 		{
 			if ( fds[0].revents & POLLIN )
 			{
-				HandleRX( sd );
+				HandleRX( sdsock );
 			}
 
 			if( fds[0].revents & ( POLLHUP | POLLERR ) )
-			{
-				fprintf( stderr, "Fatal: IPv4 socket experienced fault.  Aborting\n" );
-				return -14;
-			}			
-		}
-
-		if ( fds[2].revents )
-		{
-			if ( fds[2].revents & POLLIN )
-			{
-				HandleRX( sd6 );
-			}
-
-			if( fds[2].revents & ( POLLHUP | POLLERR ) )
 			{
 				fprintf( stderr, "Fatal: IPv6 socket experienced fault.  Aborting\n" );
 				return -14;
