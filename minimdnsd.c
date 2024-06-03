@@ -621,7 +621,7 @@ int main( int argc, char *argv[] )
 	{
 		struct sockaddr_in sin = {
 			.sin_family = AF_INET,
-			.sin_addr = inet_addr( "127.0.0.93" ),
+			.sin_addr = INADDR_ANY,
 			.sin_port = htons( MDNS_PORT )
 		};
 		if ( bind( sdsock, (struct sockaddr *)&sin, sizeof(sin) ) == -1 )
