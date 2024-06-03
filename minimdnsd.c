@@ -107,6 +107,7 @@ void ReloadHostname()
 	hostname[hostnamelen] = 0;
 
 	printf( "Responding to hostname: \"%s\"\n", hostname );
+	fflush( stdout );
 	return;
 
 hostnamefault:
@@ -181,6 +182,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		int local = IsAddressLocal( &sa4->sin_addr );
 		if ( !local ) return -2;
 		printf( "Multicast adding address: %s\n", addrout );
+		fflush( stdout );
 		AddMDNSInterface4( &sa4->sin_addr );
 	}
 #ifndef DISABLE_IPV6
@@ -192,6 +194,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		int local = IsAddress6Local( &sa6->sin6_addr );
 		if ( !local ) return -3;
 		printf( "Multicast adding interface: %d\n", sa6->sin6_scope_id );
+		fflush( stdout );
 		AddMDNSInterface6( sa6->sin6_scope_id );
 	}
 #endif
@@ -225,7 +228,7 @@ static inline void HandleNetlinkData()
 	struct nlmsghdr *nlh;
 	char buffer[4096];
 	nlh = (struct nlmsghdr *)buffer;
-	while ( ( len = recv( sdifaceupdown, nlh, 4096, 0 ) ) > 0 )
+	while ( ( len = recv( sdifaceupdown, nlh, 4096, MSG_DONTWAIT ) ) > 0 )
 	{
 		// technique is based around https://stackoverflow.com/a/2353441/2926815
 		while ( ( NLMSG_OK( nlh, len ) ) && ( nlh->nlmsg_type != NLMSG_DONE ) )
@@ -352,6 +355,7 @@ static inline void HandleRX( int sock )
 		return;
 	}
 
+	int ifindex_debug = -1;
 	struct in_addr local_addr_4 = { 0 };
 	int ipv4_valid = 0;
 #ifndef DISABLE_IPV6
@@ -390,6 +394,7 @@ static inline void HandleRX( int sock )
 
 			local_addr_6 = pi->ipi6_addr;
 			ipv6_valid = 1;
+			ifindex_debug = pi->ipi6_ifindex;
 
 			//int i;
 			//for( i = 0; i < sizeof( local_addr_6 ); i++ )
