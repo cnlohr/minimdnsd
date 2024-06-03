@@ -1,29 +1,4 @@
 
-
-
-	// As a general note: Originally, I tried to use recvmsg to get packet info toreply
-	// to the same addres, but that didn't pan out.
-	// We have to enable PKTINFO so we can use recvmsg, so we can get desination address
-	// so we can reply accordingly.
-	if( setsockopt(sd6, IPPROTO_IP, IP_PKTINFO, &optval, sizeof(optval)) != 0 )
-	{
-		fprintf( stderr, "Fatal: OS Does not support IP_PKTINFO on IPv6 socket.\n" );
-		return -9;
-	}
-
-
-
-
-
-	//printf( "%d / %d\n", r, sender.sa_family );
-	for( i = 0; i < sl; i++ )
-		printf( "%02x ", ((uint8_t*)&sender)[i] );
-	printf( "\n" );
-
-
-
-
-
 		//fprintf( stderr, "You can figure out whose fault it is with:\n" );
 		//fprintf( stderr, " sudo netstat -nap | grep 5353\n" );
 		//fprintf( stderr, "Is avahi running? If so, you can kill it with:\n" );
@@ -31,60 +6,95 @@
 		//fprintf( stderr, " sudo service avahi-daemon stop\n" );
 
 
+/*
+//			else
+	//			SendSpecificService( i, namestartptr, xactionid, stlen, 1 );
+		for( i = 0; i < MAX_MDNS_NAMES; i++ )
+		{
+			//Handle [hostname].local, or [hostname].[service].local
+			if( MDNSNames[i] && dotlen && strncmp( MDNSNames[i], path, dotlen ) == 0 && dotlen == strlen( MDNSNames[i] ))
+			{
+				found = 1;
+				if( record_type == 0x0001 ) //A Name Lookup.
+					SendOurARecord( namestartptr, xactionid, stlen, 1 );
+				else
+					SendSpecificService( i, namestartptr, xactionid, stlen, 1 );
+			}
+		}
+*/
 
 
-//	sendto( sock, "hello", 5, 0, (struct sockaddr*) &sender, sl );
+#if 0
+
+		if( !found ) //Not a specific entry lookup...
+		{
+			//Is this a browse?
+			if( strcmp( path, "_services._dns-sd._udp.local" ) == 0 )
+			{
+				SendAvailableServices( namestartptr, xactionid, stlen );
+			}
+			else
+			{
+				// FUTURE: Possibly support services.
+/*
+				//A specific service?
+				for( i = 0; i < MAX_MDNS_SERVICES; i++ )
+				{
+					const char * srv = MDNSServices[i];
+					if( !srv ) continue;
+					int sl = strlen( srv );
+					if( strncmp( path, srv, sl ) == 0 )
+					{
+						SendSpecificService( i, namestartptr, xactionid, stlen, 0 );
+					}
+				}
+*/
+			}
+		}
+#endif
 
 
-	// Using recvmsg
 
-	// This is a little tricky - so we can avoid having a separate socket for every single
-	// interface, we can instead, just recvmsg and discern which interfaces the message
-	// came frmo.
 
-//	char ctrlbuff[512] = { 0 };
 
-//	int r = recvfrom( sd, buffer, sizeof(buffer), MSG_DONTWAIT, &sender, &address_len );
-//	if( r <= 0 ) return;
-	struct sockaddr_in peeraddr;
-	// if you want access to the data you need to init the msg_iovec fields
-    struct iovec iov = {
-		.iov_base = buffer,
-		.iov_len = sizeof( buffer ),
-	};
-	struct cmsg_t
-	{
-		struct cmsghdr hdr;
-		uint8_t pld[512];
-	} cmsg = { 0 };
-	struct msghdr msghdr = {
-		.msg_name = &sender,
-		.msg_namelen = sizeof( sender ),
-		.msg_control = &cmsg,
-		.msg_controllen = sizeof( cmsg ),
-		.msg_flags = 0,
-		.msg_iov = &iov,
-		.msg_iovlen = 1,
-	};
 
-	int r = recvmsg( sock, &msghdr, 0 );
 
-	int rflags = msghdr.msg_flags;
 
-	if( rflags & (MSG_TRUNC | MSG_CTRUNC) )
-	{
-		// This should basically never happen.
-		return;
-	}
 
-	struct sockaddr_in6 * sa6 = (struct sockaddr_in6 *)&peeraddr;
 
-	printf( "R: %d / %d / %d (%04x) (%d) / [%d %d %d] %02x %02x %02x %02x / %02x %02x %02x %02x\n", r, sender.sa_family, htons( sa6->sin6_port ), sa6->sin6_addr.s6_addr[0], msghdr.msg_namelen, cmsg.hdr.cmsg_len, cmsg.hdr.cmsg_level, cmsg.hdr.cmsg_type, cmsg.pld[0], cmsg.pld[1], cmsg.pld[2], cmsg.pld[3], buffer[0], buffer[1], buffer[2], buffer[3] );
 
-	for( i = 0; i < cmsg.hdr.cmsg_len; i++ )
-	{
-		printf( "%02x ", cmsg.pld[i] );
-	}
-	printf( "\n" );
-return;
-//XXX TODO: Can we use recv here?
+
+
+
+// Bonus: We can keep around a list of addesses known to ports
+// so when we get an MDNS request on IPv4, we can also servce a
+// ipv6 reply.
+struct sockaddr_in * sockaddrListByIFace4;
+int    maxIFaceList4;
+struct sockaddr_in6 * sockaddrListByIFace6;
+int    maxIFaceList6;
+
+
+
+
+		// Bonus - for keeping known addess-to-interface mapping, specifcally to support ping6.
+		if( ifindex >= maxIFaceList4 )
+		{
+			int newlen = ifindex + 1;
+			sockaddrListByIFace4 = realloc( sockaddrListByIFace4, newlen * sizeof( sockaddrListByIFace4[0] ) );
+			memset( sockaddrListByIFace4 + maxIFaceList4, 0, sizeof( sockaddrListByIFace4[0] ) * (newlen - maxIFaceList4) );
+			maxIFaceList4 = newlen;
+		}
+		memcpy( &sockaddrListByIFace4[ifindex], sa4, sizeof( sockaddrListByIFace4[0] ) );
+
+
+		// Bonus - for keeping known addess-to-interface mapping, specifcally to support ping6.
+		if( ifindex >= maxIFaceList6 )
+		{
+			int newlen = ifindex + 1;
+			sockaddrListByIFace6 = realloc( sockaddrListByIFace6, newlen * sizeof( sockaddrListByIFace6[0] ) );
+			memset( sockaddrListByIFace6 + maxIFaceList6, 0, sizeof( sockaddrListByIFace6[0] ) * (newlen - maxIFaceList6) );
+			maxIFaceList6 = newlen;
+		}
+		memcpy( &sockaddrListByIFace6[ifindex], sa6, sizeof( sockaddrListByIFace6[0] ) );	
+		printf( "Updating index %d / %d\n", ifindex, sa6->sin6_family );

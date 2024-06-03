@@ -12,3 +12,8 @@ Extremely simple MDNS server for Linux
  * Difficult to disable
  * It doens't even follow the multicast rules, and binds to 0.0.0.0:5353 / :::5353
 
+
+Holy cow...
+https://superuser.com/questions/1086954/how-do-i-use-mdns-for-ssh-6
+ping6 is all over the place.
+

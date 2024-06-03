@@ -4,7 +4,6 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <net/if.h>
 #include <string.h>
@@ -15,27 +14,21 @@
 #include <sys/socket.h>
 #include <linux/in6.h>
 #include <limits.h>
+#include <fcntl.h>
 
 // For detecting interfaces going away or coming back.
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 
-
-#define MAX_MDNS_NAMES 1
-
-char	hostname[HOST_NAME_MAX+1];
-time_t	hosttime = -1;
-int		hostnamelen = 0;
-
-
-struct sockaddr_in * sockaddrListByIFace4;
-int    maxIFaceList4;
-struct sockaddr_in6 * sockaddrListByIFace6;
-int    maxIFaceList6;
+// For detecting "hostname" change.
+#include <sys/inotify.h>
 
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
-
 #define MDNS_PORT 5353
+
+char	hostname[HOST_NAME_MAX+1];
+int		hostnamelen = 0;
+int		hostname_watch;
 
 struct in_addr localInterface;
 struct sockaddr_in groupSock;
@@ -44,18 +37,74 @@ int sdsock;
 int is_bound_6;
 int sdifaceupdown;
 
-int AddMDNSInterface4( struct in_addr * saddr )
+void ReloadHostname()
 {
-	struct ip_mreq mreq;
-	mreq.imr_multiaddr.s_addr = inet_addr( "224.0.0.251" );
-	memcpy( &mreq.imr_interface, saddr, sizeof( *saddr ) );
+	int fh = open( "/etc/hostname", O_RDONLY );
+	if( fh < 1 )
+	{
+		goto hostnamefault;
+	}
+	int rd = read( fh, hostname, HOST_NAME_MAX );
+	close( fh );
+	if( rd <= 0 )
+	{
+		goto hostnamefault;
+	}
+
+	hostnamelen = rd;
+
+	int j;
+	for( j = 0; j < rd; j++ )
+	{
+		char c = hostname[j];
+		if( c == '\n' )                 // Truncate at newline
+		{
+			hostnamelen = j;
+		}
+		else if( c >= 'A' && c <= 'Z' ) // Convert to lowercase
+		{
+			hostname[j] = c + 'z' - 'Z';
+		}
+	}
+	hostname[hostnamelen] = 0;
+
+	printf( "Responding to hostname: \"%s\"\n", hostname );
+	return;
+
+hostnamefault:
+	fprintf( stderr, "ERROR: Can't stat /etc/hostname\n" );
+	return;
+}
+
+void AddMDNSInterface6( int interface )
+{
+	// Multicast v6 = ff01:0:0:0:0:0:0:fb
+
+	struct ipv6_mreq mreq6 = {
+		.ipv6mr_multiaddr = { { { 0xff,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0xfb } } },
+		.ipv6mr_interface = interface,
+	};
+
+	if ( setsockopt( sdsock, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, (char *)&mreq6, sizeof(mreq6)) == -1)
+	{
+		fprintf( stderr, "WARNING: Could not join ipv6 membership to interface %d (%d %s)\n", interface, errno, strerror(errno) );
+	}
+}
+
+
+void AddMDNSInterface4( struct in_addr * saddr )
+{
+	// Multicast v4 = 224.0.0.251
+
+	struct ip_mreq mreq = {
+		.imr_multiaddr.s_addr = inet_addr( "224.0.0.251" ),
+		.imr_interface = *saddr
+	};
 	if ( setsockopt( sdsock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) == -1)
 	{
 		char * addr = inet_ntoa( *saddr );
 		fprintf( stderr, "WARNING: Could not join membership to %s / code %d (%s)\n", addr, errno, strerror(errno) );
-		return -1;
 	}
-	return 0;
 }
 
 int IsAddressLocal( struct in_addr * testaddr )
@@ -81,7 +130,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		return -1;
 	}
 
-	int family = addr->sa_family;
+	int family = addr->sa_family;	
 
 	if ( family == AF_INET )
 	{
@@ -100,7 +149,8 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		const char * addrout = inet_ntop( family, &sa6->sin6_addr, addrbuff, sizeof( addrbuff ) - 1 );
 		int local = IsAddress6Local( &sa6->sin6_addr );
 		if ( !local ) return -3;
-		printf( "LOCAL: %s, but join not written yet\n", addrout );
+		printf( "Multicast adding interface: %d\n", sa6->sin6_scope_id );
+		AddMDNSInterface6( sa6->sin6_scope_id );
 	}
 	return 0;
 }
@@ -125,8 +175,6 @@ int HandleRequestingInterfaces()
 	}
 	return 0;
 }
-
-
 
 static inline void HandleNetlinkData()
 {
@@ -164,14 +212,6 @@ static inline void HandleNetlinkData()
 							sai.sin6_scope_id = ifindex;
 							memcpy( &sai.sin6_addr, RTA_DATA(rth), pld );
 							CheckAndAddMulticast( (struct sockaddr*)&sai );
-							if( ifindex >= maxIFaceList6 )
-							{
-								int newlen = ifindex + 1;
-								sockaddrListByIFace6 = realloc( sockaddrListByIFace6, newlen * sizeof( sai ) );
-								memset( sockaddrListByIFace6 + maxIFaceList6, 0, sizeof( sai ) * (newlen - maxIFaceList6) );
-								maxIFaceList6 = newlen;
-							}
-							memcpy( &sockaddrListByIFace6[ifindex], &sai, sizeof( sai ) );
 						}
 						else if ( ifa->ifa_family == AF_INET )
 						{
@@ -179,14 +219,6 @@ static inline void HandleNetlinkData()
 							sai.sin_family = AF_INET;
 							memcpy( &sai.sin_addr, RTA_DATA(rth), pld );
 							CheckAndAddMulticast( (struct sockaddr*)&sai );
-							if( ifindex >= maxIFaceList4 )
-							{
-								int newlen = ifindex + 1;
-								sockaddrListByIFace4 = realloc( sockaddrListByIFace4, newlen * sizeof( sai ) );
-								memset( sockaddrListByIFace4 + maxIFaceList4, 0, sizeof( sai ) * (newlen - maxIFaceList6) );
-								maxIFaceList4 = newlen;
-							}
-							memcpy( &sockaddrListByIFace4[ifindex], &sai, sizeof( sai ) );
 						}
 					}
 					rth = RTA_NEXT( rth, rtl );
@@ -244,17 +276,84 @@ static inline void HandleRX( int sock )
 
 	struct sockaddr_in6 sender = { 0 };
 	socklen_t sl = sizeof( sender );
-	int r = recvfrom( sock, buffer, sizeof(buffer), 0, (struct sockaddr*) &sender, &sl );
 
-	if( r <= 0 )
-		return;	
+	// Using recvmsg
 
-	for( i = 0; i < sl; i++ )
-		printf( "%02x ", ((uint8_t*)&sender)[i] );
-	printf( "\n" );
+	// This is a little tricky - so we can avoid having a separate socket for every single
+	// interface, we can instead, just recvmsg and discern which interfaces the message
+	// came frmo.
 
-	int iface = htonl( sender.sin6_scope_id );
-	printf( "FAMILY: %d / %d\n", sender.sin6_family, iface );
+	struct sockaddr_in peeraddr;
+	// if you want access to the data you need to init the msg_iovec fields
+    struct iovec iov = {
+		.iov_base = buffer,
+		.iov_len = sizeof( buffer ),
+	};
+	uint8_t cmbuf[1024];
+	struct msghdr msghdr = {
+		.msg_name = &sender,
+		.msg_namelen = sizeof( sender ),
+		.msg_control = cmbuf,
+		.msg_controllen = sizeof( cmbuf ),
+		.msg_flags = 0,
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+	};
+
+	int r = recvmsg( sock, &msghdr, 0 );
+
+	if( r < 0 || msghdr.msg_flags & (MSG_TRUNC | MSG_CTRUNC) )
+	{
+		// This should basically never happen.
+		return;
+	}
+
+	struct in_addr local_addr_4 = { 0 };
+	struct in6_addr local_addr_6 = { 0 };
+	int ipv4_valid = 0;
+	int ipv6_valid = 0;
+
+	for ( struct cmsghdr *cmsg = CMSG_FIRSTHDR( &msghdr );
+    		cmsg != NULL;
+    		cmsg = CMSG_NXTHDR( &msghdr, cmsg ) )
+	{
+		// ignore the control headers that don't match what we want
+		// see https://stackoverflow.com/a/5309155/2926815
+		if ( cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO )
+		{
+			struct in_pktinfo * pi = (struct in_pktinfo *)CMSG_DATA(cmsg);
+			// at this point, peeraddr is the source sockaddr
+			// pi->ipi_spec_dst is the destination in_addr
+			// pi->ipi_addr is the receiving interface in_addr
+			local_addr_4 = pi->ipi_spec_dst;
+			// pi->ipi_addr is actually the multicast address.
+			ipv4_valid = 1;
+		}
+		else if( cmsg->cmsg_level == IPPROTO_IPV6 && 
+				( cmsg->cmsg_type == IPV6_PKTINFO || cmsg->cmsg_type == IPV6_RECVPKTINFO ) )
+		{
+			// Some build platforms do not include this.
+			struct in6_pktinfo_shadow
+			{
+				struct in6_addr ipi6_addr;	/* src/dst IPv6 address */
+				unsigned int ipi6_ifindex;	/* send/recv interface index */
+			};
+
+			struct in6_pktinfo_shadow * pi = (struct in6_pktinfo_shadow *)CMSG_DATA(cmsg);
+
+			local_addr_6 = pi->ipi6_addr;
+			ipv6_valid = 1;
+
+			//int i;
+			//for( i = 0; i < sizeof( local_addr_6 ); i++ )
+			//	printf( "%02x", ((uint8_t*)&local_addr_6)[i] );
+			//printf( "\n" );
+		}
+		else
+		{
+			printf( "%d %d  %d %d\n", cmsg->cmsg_level, cmsg->cmsg_type,IPPROTO_IPV6, IPV6_RECVPKTINFO );
+		}
+	}
 
 	uint16_t * psr = (uint16_t*)buffer;
 	uint16_t xactionid = ntohs( psr[0] );
@@ -311,157 +410,87 @@ static inline void HandleRX( int sock )
 
 		int found = 0;
 
-		struct stat s;
-		int d = stat( "/etc/hostname", &s );
-		if( d )
-		{
-			goto hostnamefault;
-		}
-		if( s.st_mtime != hosttime )
-		{
-			hosttime = s.st_mtime;
-			int fh = open( "/etc/hostname", O_RDONLY );
-			if( fh < 1 )
-			{
-				goto hostnamefault;
-			}
-			int rd = read( fh, hostname, HOST_NAME_MAX );
-			close( fh );
-			if( rd <= 0 )
-			{
-				goto hostnamefault;
-			}
-
-			hostnamelen = rd;
-
-			int j;
-			for( j = 0; j < rd; j++ )
-			{
-				char c = hostname[j];
-				if( c == '\n' )                 // Truncate at newline
-				{
-					hostnamelen = j;
-				}
-				else if( c >= 'A' && c <= 'Z' ) // Convert to lowercase
-				{
-					hostname[j] = c + 'z' - 'Z';
-				}
-			}
-			hostname[hostnamelen] = 0;
-		}
-
 		if( hostname[0] && dotlen && dotlen == hostnamelen && memcmp( hostname, path, dotlen ) == 0 )
 		{
-			struct sockaddr_in  * ipv4 = ( iface < maxIFaceList4 ) ? sockaddrListByIFace4 + iface : 0;
-			struct sockaddr_in6 * ipv6 = ( iface < maxIFaceList6 ) ? sockaddrListByIFace6 + iface : 0;
+			uint8_t outbuff[MAX_MDNS_PATH*2+128];
+			uint8_t * obptr = outbuff;
+			uint16_t * obb = (uint16_t*)outbuff;
 
-			// Check validity.
-			if( ipv4 && !ipv4->sin_family ) ipv4 = 0;
-			if( ipv6 && !ipv6->sin6_family ) ipv6 = 0;
+			int sendA = ( record_type == 1 /*A*/ && ipv4_valid );
+			int sendAAAA = ( /*record_type == 28 */ 1 /*AAAA*/ && ipv6_valid ); // send unsocilicited.
 
-			printf( "%d %p %p\n", iface, ipv4, ipv6 );
-
-			if( record_type == 1 /*A*/ && ipv4 ) //A Name Lookup.
+			sendA = 0;
+			if( sendA || sendAAAA )
 			{
-				//Found match with us.
-				//Send a response.
-
-				uint8_t outbuff[MAX_MDNS_PATH+48];
-				uint8_t * obptr = outbuff;
-				uint16_t * obb = (uint16_t*)outbuff;
 				*(obb++) = xactionid;
 				*(obb++) = htons(0x8400); //Authortative response.
 				*(obb++) = 0;
-				*(obb++) = htons(1); //1 answer.
+				*(obb++) = htons( 1 ); //1 answer.
 				*(obb++) = 0;
 				*(obb++) = 0;
 
-				obptr = (uint8_t*)obb;
+				// Answer
 				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
 				obptr += stlen+1;
 				*(obptr++) = 0;
-				*(obptr++) = 0x00; *(obptr++) = 0x01; //A record
+				*(obptr++) = 0x00; *(obptr++) = (sendA ? 0x01 : 0x1c ); // A record
 				*(obptr++) = 0x80; *(obptr++) = 0x01; //Flush cache + in ptr.
 				*(obptr++) = 0x00; *(obptr++) = 0x00; //TTL
 				*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
-				*(obptr++) = 0x00; *(obptr++) = 0x04; //Size 4 (IP)
-				
-				memcpy( obptr, &ipv4->sin_addr, 4 );
-				obptr+=4;
-
-				sendto( sock, outbuff, obptr - outbuff, 0, (struct sockaddr*)&sender, sl );
 			}
-			else if( record_type == 28 /*AAAA*/ && ipv6 )
+
+			obptr = (uint8_t*)obb;
+
+			if( sendA )
 			{
-				// XXX TODO: Figure out IPv6 Replies.
-
+				*(obptr++) = 0x00; *(obptr++) = 0x04; //Size 4 (IP)
+				memcpy( obptr, &local_addr_4.s_addr, 4 );
+				obptr+=4;
+			}
+			else if( sendAAAA )
+			{
+				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
+				obptr += stlen+1;
+				*(obptr++) = 0;
+				*(obptr++) = 0x00; *(obptr++) = 0x1c; // AAAA record
+				*(obptr++) = 0x80; *(obptr++) = 0x01; //Flush cache + in ptr.
+				*(obptr++) = 0x00; *(obptr++) = 0x00; //TTL
+				*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
+				*(obptr++) = 0x00; *(obptr++) = 0x10; //Size 4 (IP)				
+				memcpy( obptr, &local_addr_6.s6_addr, 16 );
+				obptr+=16;
 			}
 
-//			else
-	//			SendSpecificService( i, namestartptr, xactionid, stlen, 1 );
+
+			if( sendA || sendAAAA )
+				sendto( sock, outbuff, obptr - outbuff, 0, (struct sockaddr*)&sender, sl );
+
 			found = 1;
 		}	
 
-/*
-		for( i = 0; i < MAX_MDNS_NAMES; i++ )
-		{
-			//Handle [hostname].local, or [hostname].[service].local
-			if( MDNSNames[i] && dotlen && strncmp( MDNSNames[i], path, dotlen ) == 0 && dotlen == strlen( MDNSNames[i] ))
-			{
-				found = 1;
-				if( record_type == 0x0001 ) //A Name Lookup.
-					SendOurARecord( namestartptr, xactionid, stlen, 1 );
-				else
-					SendSpecificService( i, namestartptr, xactionid, stlen, 1 );
-			}
-		}
-*/
 
-
-#if 0
-
-		if( !found ) //Not a specific entry lookup...
-		{
-			//Is this a browse?
-			if( strcmp( path, "_services._dns-sd._udp.local" ) == 0 )
-			{
-				SendAvailableServices( namestartptr, xactionid, stlen );
-			}
-			else
-			{
-				// FUTURE: Possibly support services.
-/*
-				//A specific service?
-				for( i = 0; i < MAX_MDNS_SERVICES; i++ )
-				{
-					const char * srv = MDNSServices[i];
-					if( !srv ) continue;
-					int sl = strlen( srv );
-					if( strncmp( path, srv, sl ) == 0 )
-					{
-						SendSpecificService( i, namestartptr, xactionid, stlen, 0 );
-					}
-				}
-*/
-			}
-		}
-#endif
+		// We could also reply with services here.
 
 	}
 	return;
-hostnamefault:
-	fprintf( stderr, "ERROR: Can't stat /etc/hostname\n" );
-	return;
 }
 
-int main (int argc, char *argv[] )
+int main( int argc, char *argv[] )
 {
 	struct sockaddr_in respsock;
+	ReloadHostname();
+
+	int inotifyfd = inotify_init1( IN_NONBLOCK );
+	hostname_watch = inotify_add_watch( inotifyfd, "/etc/hostname", IN_MODIFY | IN_CREATE );
+	if( hostname_watch < 0 )
+	{
+		fprintf( stderr, "WARNING: inotify cannot watch file\n" );
+	}
 
 	sdsock = socket( AF_INET6, SOCK_DGRAM, 0 );
 	if ( sdsock < 0 )
 	{
-		fprintf( stderr, "Warning: Opening IPv6 datagram socket error.  Trying IPv4");
+		fprintf( stderr, "WARNING: Opening IPv6 datagram socket error.  Trying IPv4");
 		sdsock = socket( AF_INET, SOCK_DGRAM, 0 );
 		is_bound_6 = 0;
 	}
@@ -475,8 +504,23 @@ int main (int argc, char *argv[] )
 	int optval = 1;
 	if ( setsockopt( sdsock, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
 	{
-		fprintf( stderr, "Warning: Could not set SO_REUSEPORT\n" );
+		fprintf( stderr, "WARNING: Could not set SO_REUSEPORT\n" );
 	}
+
+	// We have to enable PKTINFO so we can use recvmsg, so we can get desination address
+	// so we can reply accordingly.
+	if( setsockopt( sdsock, IPPROTO_IP, IP_PKTINFO, &optval, sizeof( optval ) ) != 0 )
+	{
+		fprintf( stderr, "Fatal: OS Does not support IP_PKTINFO on IPv6 socket.\n" );
+		return -9;
+	}
+
+	if( is_bound_6 && setsockopt( sdsock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &optval, sizeof( optval ) ) != 0 )
+	{
+		fprintf( stderr, "Fatal: OS Does not support IP_PKTINFO on IPv6 socket.\n" );
+		return -9;
+	}
+
 
 	sdifaceupdown = socket( PF_NETLINK, SOCK_RAW, NETLINK_ROUTE );
 	if ( sdifaceupdown < 0 )
@@ -549,15 +593,14 @@ int main (int argc, char *argv[] )
 
 	while ( 1 )
 	{
-		struct pollfd fds[2] = {
+		struct pollfd fds[3] = {
 			{ .fd = sdsock, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 			{ .fd = sdifaceupdown, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
+			{ .fd = inotifyfd, .events = POLLIN, .revents = 0 },
 		};
 
-		int socks = 2;
-
 		// Make poll wait for literally forever.
-		r = poll( fds, socks, -1 );
+		r = poll( fds, sizeof( fds ) / sizeof( fds[0] ), -1 );
 
 		if ( r < 0 )
 		{
@@ -590,6 +633,14 @@ int main (int argc, char *argv[] )
 				fprintf( stderr, "Fatal: NETLINK socket experienced fault.  Aborting\n" );
 				return -14;
 			}
+		}
+
+		if ( fds[2].revents )
+		{
+			struct inotify_event event;
+			int r = read( inotifyfd, &event, sizeof( event ) );
+			r = r;
+			ReloadHostname();
 		}
 	}
 	return 0;
