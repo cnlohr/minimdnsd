@@ -307,7 +307,7 @@ static inline void HandleRX( int sock )
 
 	struct sockaddr_in peeraddr;
 	// if you want access to the data you need to init the msg_iovec fields
-    struct iovec iov = {
+	struct iovec iov = {
 		.iov_base = buffer,
 		.iov_len = sizeof( buffer ),
 	};
@@ -441,7 +441,6 @@ static inline void HandleRX( int sock )
 			int sendA = ( record_type == 1 /*A*/ && ipv4_valid );
 			int sendAAAA = ( /*record_type == 28 */ 1 /*AAAA*/ && ipv6_valid ); // send unsocilicited.
 
-			sendA = 0;
 			if( sendA || sendAAAA )
 			{
 				*(obb++) = xactionid;
