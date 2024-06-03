@@ -62,7 +62,7 @@
 #include <sys/inotify.h>
 
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
-#define MDNS_PORT 53
+#define MDNS_PORT 5353
 
 char	hostname[HOST_NAME_MAX+1];
 int		hostnamelen = 0;
@@ -171,7 +171,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		return -1;
 	}
 
-	int family = addr->sa_family;	
+	int family = addr->sa_family;
 
 	if ( family == AF_INET )
 	{
