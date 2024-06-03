@@ -201,7 +201,6 @@ static inline void HandleNetlinkData()
 						int ifindex = ifa->ifa_index;
 						char name[IFNAMSIZ] = { 0 };
 						if_indextoname( ifa->ifa_index, name );
-						//printf( "Update Device: %s / Family %d\n", name, ifa->ifa_family );
 						int pld = RTA_PAYLOAD(rth);
 
 						// Record the index.
