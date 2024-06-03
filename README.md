@@ -35,6 +35,12 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
  * `make`
  * or, optionally `make install` to install it to /usr/local/bin/minimdnsd, and install the initd service
 
+## Long-Term
+
+ * Allow response to services (see original MDNS server here: https://github.com/cnlohr/esp82xx/blob/master/fwsrc/mdns.c)
+ * Keep it under or around 1k LoC
+ * Keep it < 32kB `.text`
+
 ## Things I learned
 
 IPv6 is pain.  this would have been a tiny fraction of its size if it weren't for IPv6.
