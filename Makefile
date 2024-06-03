@@ -5,7 +5,9 @@ minimdnsd : minimdnsd.c
 	size $@
 
 install : minimdnsd
-	install minimdnsd /usr/local/bin/
+	sudo install minimdnsd /usr/local/bin/
+	sudo cp minimdnsd.service /etc/systemd/system
+	sudo systemctl enable minimdnsd.service
 
 clean :
 	rm -rf minimdnsd
