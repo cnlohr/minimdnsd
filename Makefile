@@ -1,7 +1,8 @@
 all : minimdnsd
 
 minimdnsd : minimdnsd.c
-	gcc -o $@ $^ -O2 -g
+	gcc -o $@ $^ -Os -g
+	size $@
 
 clean :
 	rm -rf minimdnsd
