@@ -504,7 +504,7 @@ static inline void HandleRX( int sock )
 				sendto( sock, outbuff, obptr - outbuff, 0, (struct sockaddr*)&sender, sl );
 
 			found = 1;
-		}	
+		}
 
 
 		// We could also reply with services here.
