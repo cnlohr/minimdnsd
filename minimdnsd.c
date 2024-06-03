@@ -20,6 +20,17 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 // IN THE SOFTWARE.
+//
+// The following is mostly a demo of:
+//  * Use of inotify to detect changes of /etc/hostname
+//  * Use of `getifaddrs` to iterate through all available interfaces
+//  * Use of `NETLINK_ROUTE` and `RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR`
+//    to monitor for any new network interfaces or addresse.
+//  * Use of multicast in IPv4 and IPv6 to join a multicast group
+//  * Leveraging `poll` to have programs that are completely asleep when not
+//    actively needed.
+//  * But it does implement a fully function mnds server that advertises your
+//    host to other peers on your LAN!
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -49,7 +60,7 @@
 #include <sys/inotify.h>
 
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
-#define MDNS_PORT 5353
+#define MDNS_PORT 53
 
 char	hostname[HOST_NAME_MAX+1];
 int		hostnamelen = 0;
@@ -611,7 +622,7 @@ int main( int argc, char *argv[] )
 	{
 		struct sockaddr_in sin = {
 			.sin_family = AF_INET,
-			.sin_addr = INADDR_ANY,
+			.sin_addr = inet_addr( "127.0.0.93" ),
 			.sin_port = htons( MDNS_PORT )
 		};
 		if ( bind( sdsock, (struct sockaddr *)&sin, sizeof(sin) ) == -1 )

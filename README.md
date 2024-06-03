@@ -4,15 +4,27 @@ Extremely simple MDNS server for Linux. Much smaller and lighter weight than Ava
 
 ⚠️ This has not been battle hardened, or even thoroughly checked ⚠️
 
-Primarily MDNS Hostname responder - i.e. run this, and any computer on your network can say
-
-`ping your_hostname.local`  and it will resolve to your PC.
+Primarily MDNS Hostname responder - i.e. run this, and any computer on your network can say `ping your_hostname.local`  and it will resolve to your PC. Specifically, it uses whatever name is in your `/etc/hostname`
 
  * Uses no CPU unless event requested.
  * Only needs around 32kB RAM.
  * Can run as suser or root.
  * Zero config + Watches for /etc/hostname changes.
  * Works on IPv6
+
+## General Motivation
+
+<ol>
+<li>To obviate need for avahi-daemon</li>
+<li>To provide an MDNS server on very simple systems</li>
+<li>To demonstrate the following:
+<ol>
+<li>Use of inotify to detect changes of /etc/hostname</li>
+<li>Use of `getifaddrs` to iterate through all available interfaces</li>
+<li>Use of `NETLINK_ROUTE` and `RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR` to monitor for any new network interfaces or addresses.
+<li>Use of multicast in IPv4 and IPv6 to join a multicast group<li>
+</ol>
+</ol>
 
 ## Building
 
