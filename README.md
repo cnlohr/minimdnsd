@@ -2,6 +2,8 @@
 
 Extremely simple MDNS server for Linux. Much smaller and lighter weight than Avahi.
 
+⚠️ This has not been battle hardened, or even thoroughly checked ⚠️
+
 Primarily MDNS Hostname responder - i.e. run this, and any computer on your network can say
 
 `ping your_hostname.local`  and it will resolve to your PC.
