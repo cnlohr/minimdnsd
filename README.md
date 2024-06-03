@@ -8,6 +8,7 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
 
  * Uses no CPU unless event requested.
  * Only needs around 32kB RAM.
+ * Compiles to between 15-45kB
  * Can run as suser or root.
  * Zero config + Watches for /etc/hostname changes.
  * Works on IPv6
