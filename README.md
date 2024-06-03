@@ -1,4 +1,4 @@
-# minimdns
+# minimdnsd (MDNS server)
 
 Extremely simple MDNS server for Linux. Much smaller and lighter weight than Avahi.
 
