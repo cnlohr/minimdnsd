@@ -453,7 +453,7 @@ static inline void HandleRX( int sock )
 
 			int sendA = ( record_type == 1 /*A*/ && ipv4_valid );
 #ifndef DISABLE_IPV6
-			int sendAAAA = ( /*record_type == 28 */ 1 /*AAAA*/ && ipv6_valid ); // send unsocilicited.
+			int sendAAAA = ( record_type == 28 /*AAAA*/ && ipv6_valid );
 #else
 			int sendAAAA = 0;
 #endif
