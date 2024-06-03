@@ -466,6 +466,8 @@ static inline void HandleRX( int sock )
 				*(obb++) = 0;
 				*(obb++) = 0;
 
+				obptr = (uint8_t*)obb;
+
 				// Answer
 				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
 				obptr += stlen+1;
@@ -476,8 +478,6 @@ static inline void HandleRX( int sock )
 				*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
 			}
 
-			obptr = (uint8_t*)obb;
-
 			if( sendA )
 			{
 				*(obptr++) = 0x00; *(obptr++) = 0x04; //Size 4 (IP)
@@ -487,13 +487,13 @@ static inline void HandleRX( int sock )
 #ifndef DISABLE_IPV6
 			else if( sendAAAA )
 			{
-				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
-				obptr += stlen+1;
-				*(obptr++) = 0;
-				*(obptr++) = 0x00; *(obptr++) = 0x1c; // AAAA record
-				*(obptr++) = 0x80; *(obptr++) = 0x01; //Flush cache + in ptr.
-				*(obptr++) = 0x00; *(obptr++) = 0x00; //TTL
-				*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
+//				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
+//				obptr += stlen+1;
+//				*(obptr++) = 0;
+//				*(obptr++) = 0x00; *(obptr++) = 0x1c; // AAAA record
+//				*(obptr++) = 0x80; *(obptr++) = 0x01; //Flush cache + in ptr.
+//				*(obptr++) = 0x00; *(obptr++) = 0x00; //TTL
+//				*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
 				*(obptr++) = 0x00; *(obptr++) = 0x10; //Size 4 (IP)				
 				memcpy( obptr, &local_addr_6.s6_addr, 16 );
 				obptr+=16;
