@@ -39,6 +39,8 @@
 #include <limits.h>
 #include <fcntl.h>
 
+#define DISABLE_IPV6
+
 // For detecting interfaces going away or coming back.
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -99,6 +101,7 @@ hostnamefault:
 	return;
 }
 
+#ifndef DISABLE_IPV6
 void AddMDNSInterface6( int interface )
 {
 	// Multicast v6 = ff01:0:0:0:0:0:0:fb
@@ -113,7 +116,7 @@ void AddMDNSInterface6( int interface )
 		fprintf( stderr, "WARNING: Could not join ipv6 membership to interface %d (%d %s)\n", interface, errno, strerror(errno) );
 	}
 }
-
+#endif
 
 void AddMDNSInterface4( struct in_addr * saddr )
 {
@@ -141,10 +144,12 @@ int IsAddressLocal( struct in_addr * testaddr )
 	return 0;
 }
 
+#ifndef DISABLE_IPV6
 int IsAddress6Local( struct in6_addr * addr )
 {
 	return IN6_IS_ADDR_LINKLOCAL( addr ) || IN6_IS_ADDR_SITELOCAL( addr );
 }
+#endif
 
 int CheckAndAddMulticast( struct sockaddr * addr )
 {
@@ -165,6 +170,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		printf( "Multicast adding address: %s\n", addrout );
 		AddMDNSInterface4( &sa4->sin_addr );
 	}
+#ifndef DISABLE_IPV6
 	else if ( family == AF_INET6 )
 	{
 		char addrbuff[INET6_ADDRSTRLEN+10] = { 0 }; // Actually 46 for IPv6, but let's add some buffer.
@@ -175,6 +181,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		printf( "Multicast adding interface: %d\n", sa6->sin6_scope_id );
 		AddMDNSInterface6( sa6->sin6_scope_id );
 	}
+#endif
 	return 0;
 }
 
@@ -227,7 +234,15 @@ static inline void HandleNetlinkData()
 						int pld = RTA_PAYLOAD(rth);
 
 						// Record the index.
-						if ( ifa->ifa_family == AF_INET6 )
+						if ( ifa->ifa_family == AF_INET )
+						{
+							struct sockaddr_in sai = { 0 };
+							sai.sin_family = AF_INET;
+							memcpy( &sai.sin_addr, RTA_DATA(rth), pld );
+							CheckAndAddMulticast( (struct sockaddr*)&sai );
+						}
+#ifndef DISABLE_IPV6
+						else if ( ifa->ifa_family == AF_INET6 )
 						{
 							struct sockaddr_in6 sai = { 0 };
 							sai.sin6_family = AF_INET6;
@@ -235,13 +250,7 @@ static inline void HandleNetlinkData()
 							memcpy( &sai.sin6_addr, RTA_DATA(rth), pld );
 							CheckAndAddMulticast( (struct sockaddr*)&sai );
 						}
-						else if ( ifa->ifa_family == AF_INET )
-						{
-							struct sockaddr_in sai = { 0 };
-							sai.sin_family = AF_INET;
-							memcpy( &sai.sin_addr, RTA_DATA(rth), pld );
-							CheckAndAddMulticast( (struct sockaddr*)&sai );
-						}
+#endif
 					}
 					rth = RTA_NEXT( rth, rtl );
 				}
@@ -331,9 +340,11 @@ static inline void HandleRX( int sock )
 	}
 
 	struct in_addr local_addr_4 = { 0 };
-	struct in6_addr local_addr_6 = { 0 };
 	int ipv4_valid = 0;
+#ifndef DISABLE_IPV6
+	struct in6_addr local_addr_6 = { 0 };
 	int ipv6_valid = 0;
+#endif
 
 	for ( struct cmsghdr *cmsg = CMSG_FIRSTHDR( &msghdr );
     		cmsg != NULL;
@@ -351,6 +362,7 @@ static inline void HandleRX( int sock )
 			// pi->ipi_addr is actually the multicast address.
 			ipv4_valid = 1;
 		}
+#ifndef DISABLE_IPV6
 		else if( cmsg->cmsg_level == IPPROTO_IPV6 && 
 				( cmsg->cmsg_type == IPV6_PKTINFO || cmsg->cmsg_type == IPV6_RECVPKTINFO ) )
 		{
@@ -371,6 +383,7 @@ static inline void HandleRX( int sock )
 			//	printf( "%02x", ((uint8_t*)&local_addr_6)[i] );
 			//printf( "\n" );
 		}
+#endif
 		else
 		{
 			printf( "%d %d  %d %d\n", cmsg->cmsg_level, cmsg->cmsg_type,IPPROTO_IPV6, IPV6_RECVPKTINFO );
@@ -439,8 +452,11 @@ static inline void HandleRX( int sock )
 			uint16_t * obb = (uint16_t*)outbuff;
 
 			int sendA = ( record_type == 1 /*A*/ && ipv4_valid );
-			int sendAAAA = ( /*record_type == 28 */ 1 /*AAAA*/ && ipv6_valid ); // send unsocilicited.
-
+#ifndef DISABLE_IPV6
+			int sendAAAA = ( record_type == 28 /*AAAA*/ && ipv6_valid );
+#else
+			int sendAAAA = 0;
+#endif
 			if( sendA || sendAAAA )
 			{
 				*(obb++) = xactionid;
@@ -468,6 +484,7 @@ static inline void HandleRX( int sock )
 				memcpy( obptr, &local_addr_4.s_addr, 4 );
 				obptr+=4;
 			}
+#ifndef DISABLE_IPV6
 			else if( sendAAAA )
 			{
 				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
@@ -481,7 +498,7 @@ static inline void HandleRX( int sock )
 				memcpy( obptr, &local_addr_6.s6_addr, 16 );
 				obptr+=16;
 			}
-
+#endif
 
 			if( sendA || sendAAAA )
 				sendto( sock, outbuff, obptr - outbuff, 0, (struct sockaddr*)&sender, sl );
@@ -508,6 +525,7 @@ int main( int argc, char *argv[] )
 		fprintf( stderr, "WARNING: inotify cannot watch file\n" );
 	}
 
+#ifndef DISABLE_IPV6
 	sdsock = socket( AF_INET6, SOCK_DGRAM, 0 );
 	if ( sdsock < 0 )
 	{
@@ -519,6 +537,15 @@ int main( int argc, char *argv[] )
 	{
 		is_bound_6 = 1;
 	}
+#else
+	sdsock = socket( AF_INET, SOCK_DGRAM, 0 );
+	if ( sdsock < 0 )
+	{
+		fprintf( stderr, "FATAL: Could not open IPv4 Socket\n");
+	}
+
+	is_bound_6 = 0;
+#endif
 
 	// Not just avahi, but other services, too will bind to 5353, but we can use
 	// SO_REUSEPORT to allow multiple people to bind simultaneously.
@@ -536,12 +563,13 @@ int main( int argc, char *argv[] )
 		return -9;
 	}
 
+#ifndef DISABLE_IPV6
 	if( is_bound_6 && setsockopt( sdsock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &optval, sizeof( optval ) ) != 0 )
 	{
 		fprintf( stderr, "Fatal: OS Does not support IP_PKTINFO on IPv6 socket.\n" );
 		return -9;
 	}
-
+#endif
 
 	sdifaceupdown = socket( PF_NETLINK, SOCK_RAW, NETLINK_ROUTE );
 	if ( sdifaceupdown < 0 )
@@ -564,6 +592,7 @@ int main( int argc, char *argv[] )
 	}
 
 	// Bind the normal MDNS socket
+#ifndef DISABLE_IPV6
 	if( is_bound_6 )
 	{
 		struct sockaddr_in6 sin6 = {
@@ -578,6 +607,7 @@ int main( int argc, char *argv[] )
 		}
 	}
 	else
+#endif
 	{
 		struct sockaddr_in sin = {
 			.sin_family = AF_INET,
