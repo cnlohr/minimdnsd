@@ -14,19 +14,17 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
 
 ## General Motivation
 
-<ol>
-<li>To obviate need for avahi-daemon</li>
-<li>To provide an MDNS server on very simple systems</li>
-<li>To demonstrate the following:
-<ol>
-<li>Use of inotify to detect changes of /etc/hostname</li>
-<li>Use of `getifaddrs` to iterate through all available interfaces</li>
-<li>Use of `NETLINK_ROUTE` and `RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR` to monitor for any new network interfaces or addresses.</li>
-<li>Use of multicast in IPv4 and IPv6 to join a multicast group<li>
-<li>Use of `recvmsg` to get the interface and address that a UDP packet is received on</li>
-</ol>
-</ol>
+1. To obviate need for avahi-daemon
+2. To provide an MDNS server on very simple systems
 
+### To demonstrate the following:
+
+1. Use of inotify to detect changes of `/etc/hostname`
+2. Use of `getifaddrs` to iterate through all available interfaces
+3. Use of `NETLINK_ROUTE` and `RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR` to monitor for any new network interfaces or addresses.
+4. Use of multicast in IPv4 and IPv6 to join a multicast group
+5. Use of `recvmsg` to get the interface and address that a UDP packet is received on
+ 
 ## Building
 
 ### Prerequisits
