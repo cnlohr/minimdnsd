@@ -20,7 +20,7 @@ install : minimdnsd
 
 test : minimdnsd
 	./minimdnsd &
-	./minimdnsd -h testminimdnsd
+	./minimdnsd -h testminimdnsd &
 	ping -c 1 $(shell cat /etc/hostname).local
 	ping -c 1 testminimdnsd.local
 	killall minimdnsd
