@@ -1,0 +1,20 @@
+name: Build Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  Build-for-Linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Install more dependencies
+      run: |
+        sudo apt-get install -y \
+          make \
+          build-essential
+    - name: Build
+      run: make clean test deb
