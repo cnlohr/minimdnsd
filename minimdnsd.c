@@ -64,9 +64,10 @@
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
 #define MDNS_PORT 5353
 
-char	hostname[HOST_NAME_MAX+1];
-int		hostnamelen = 0;
-int		hostname_watch;
+const char * hostname_override;
+char         hostname[HOST_NAME_MAX+1];
+int          hostnamelen = 0;
+int          hostname_watch;
 
 struct in_addr localInterface;
 struct sockaddr_in groupSock;
@@ -77,6 +78,19 @@ int sdifaceupdown;
 
 void ReloadHostname()
 {
+	if( hostname_override )
+	{
+		hostnamelen = strlen( hostname_override );
+		if( hostnamelen >= HOST_NAME_MAX )
+		{
+			hostnamelen = HOST_NAME_MAX - 1;
+		}
+		memcpy( hostname, hostname_override, hostnamelen );
+		hostname[hostnamelen] = 0;
+		printf( "Using overridden name: %s\n", hostname );
+		return;
+	}
+
 	int fh = open( "/etc/hostname", O_RDONLY );
 	if( fh < 1 )
 	{
@@ -531,6 +545,20 @@ static inline void HandleRX( int sock )
 
 int main( int argc, char *argv[] )
 {
+	int c;
+	while ( ( c = getopt (argc, argv, "h:" ) ) != -1 )
+	{
+		switch (c)
+		{
+		case '?':
+			fprintf( stderr, "Error: Usage: minimdnsd [-h hostname override]\n" );
+			return -5;
+		case 'h':
+			hostname_override = optarg;
+			break;
+		}
+	}
+
 	struct sockaddr_in respsock;
 	ReloadHostname();
 

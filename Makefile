@@ -3,6 +3,8 @@ all : minimdnsd
 PACKAGE_VERSION:=0.1-$(shell cat .github/build_number)
 PACKAGE:=minimdnsd_$(PACKAGE_VERSION)
 
+SHELL=/bin/bash
+
 minimdnsd : minimdnsd.c
 	echo $(shell expr 1 + $(shell cat .github/build_number)) > .github/build_number
 	gcc -o $@ $^ -Os -g
@@ -14,6 +16,7 @@ install : minimdnsd
 	sudo systemctl daemon-reload
 	sudo systemctl enable minimdnsd.service
 	sudo service minimdnsd restart
+	cat minimdnsd.1 | gzip > /usr/share/man/man1/minimdnsd.1.gz
 
 test : minimdnsd
 	./minimdnsd &
@@ -21,7 +24,18 @@ test : minimdnsd
 	killall minimdnsd
 
 deb : minimdnsd
+	rm -rf $(PACKAGE)
 	mkdir -p $(PACKAGE)/DEBIAN
+
+	mkdir -p $(PACKAGE)/usr/bin
+	cp minimdnsd $(PACKAGE)/usr/bin/
+	mkdir -p $(PACKAGE)/etc/systemd/system
+	cp minimdnsd $(PACKAGE)/etc/systemd/system/
+	mkdir -p $(PACKAGE)/usr/share/man/man1
+	cat minimdnsd.1 | gzip > $(PACKAGE)/usr/share/man/man1/minimdnsd.1.gz
+
+	cd $(PACKAGE); find . -type f -exec md5sum {} + | cut -c 1-33,38- > DEBIAN/md5sums
+
 	echo "Package: minimdnsd" > $(PACKAGE)/DEBIAN/control
 	echo "Version: $(PACKAGE_VERSION)" >> $(PACKAGE)/DEBIAN/control
 	echo "Section: base" >> $(PACKAGE)/DEBIAN/control
@@ -29,12 +43,12 @@ deb : minimdnsd
 	echo "Architecture: $(shell dpkg --print-architecture)" >> $(PACKAGE)/DEBIAN/control
 	echo "Maintainer: cnlohr <lohr85@gmail.com>" >> $(PACKAGE)/DEBIAN/control
 	echo "Description: Bare bones MDNS server" >> $(PACKAGE)/DEBIAN/control
-
 	echo "#!/bin/sh" > $(PACKAGE)/DEBIAN/postinst
 	echo "set -e" >> $(PACKAGE)/DEBIAN/postinst
 	echo 'case "$$1" in' >> $(PACKAGE)/DEBIAN/postinst
 	echo "  abort-upgrade|abort-remove|abort-deconfigure|configure)" >> $(PACKAGE)/DEBIAN/postinst
 	echo "    systemctl daemon-reload;systemctl enable minimdnsd.service; service minimdnsd restart" >> $(PACKAGE)/DEBIAN/postinst
+	echo "    mandb" >> $(PACKAGE)/DEBIAN/postinst
 	echo "    ;;" >> $(PACKAGE)/DEBIAN/postinst
 	echo "  triggered)" >> $(PACKAGE)/DEBIAN/postinst
 	echo "    systemctl daemon-reload; service minimdnsd restart" >> $(PACKAGE)/DEBIAN/postinst
@@ -60,10 +74,6 @@ deb : minimdnsd
 	echo "exit 0" >> $(PACKAGE)/DEBIAN/postinst
 	chmod 775 $(PACKAGE)/DEBIAN/prerm
 
-	mkdir -p $(PACKAGE)/user/bin
-	cp minimdnsd $(PACKAGE)/user/bin/
-	mkdir -p $(PACKAGE)/etc/systemd/system
-	cp minimdnsd $(PACKAGE)/etc/systemd/system/
 	dpkg-deb --build $(PACKAGE)
 
 
