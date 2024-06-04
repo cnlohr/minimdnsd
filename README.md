@@ -13,6 +13,10 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
  * Zero config + Watches for `/etc/hostname` changes.
  * Works on IPv6
 
+⚠️ Caveats ⚠️
+ * This tool only replies to hostnames, so you can use `hostname.local` but not services, so you can't use it to find your printer.
+ * This tool assumes `UNICAST-RESPONSE` - whether true or not.  I am unaware of any MDNS clients that don't know how to accept it and it's tidier to just force `UNICAST-RESPONSE`.
+
 ## General Motivation
 
 1. To obviate need for avahi-daemon
