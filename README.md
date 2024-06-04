@@ -29,7 +29,13 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
 3. Use of `NETLINK_ROUTE` and `RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR` to monitor for any new network interfaces or addresses.
 4. Use of multicast in IPv4 and IPv6 to join a multicast group
 5. Use of `recvmsg` to get the interface and address that a UDP packet is received on
- 
+
+### And for general housekeeping:
+
+6. Use of github workflows to build and test tool on Linux
+7. Makefile example for building .deb files
+8. Github workflow example for generating releases on new tags.
+
 ## Building
 
 ### Prerequisits
