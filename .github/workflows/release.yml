@@ -11,12 +11,13 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
-    - name: Artifacts Pull
-      uses: actions/download-artifact@v4
-      with:
-        name: deb-file
-        path: |
-          minimdnsd_*.deb
+    - name: Install more dependencies
+      run: |
+        sudo apt-get install -y \
+          make \
+          build-essential
+    - name: Build
+      run: make clean test deb
     - name: Release
       uses: softprops/action-gh-release@v1
       with:
