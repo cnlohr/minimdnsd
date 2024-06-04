@@ -87,7 +87,7 @@ void ReloadHostname()
 		}
 		memcpy( hostname, hostname_override, hostnamelen );
 		hostname[hostnamelen] = 0;
-		printf( "Using overridden name: %s\n", hostname );
+		printf( "Using overridden name: \"%s\"\n", hostname );
 		return;
 	}
 
