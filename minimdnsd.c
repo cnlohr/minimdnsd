@@ -565,8 +565,13 @@ static inline void HandleRX( int sock, int is_resovler )
 				struct sockaddr_in sin_multicast = {
 					.sin_family = AF_INET,
 					.sin_addr = inet_addr( "224.0.0.251" ),
+					//.sin_addr = inet_addr( "192.168.1.255" ),
 					.sin_port = htons( MDNS_PORT )
 				};
+
+
+				int broadcastEnable=1;
+				setsockopt( socks_to_send, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
 
 				struct timeval tv;
 				tv.tv_sec = 3; // 3 second timeout
