@@ -1,0 +1,26 @@
+name: Relase
+
+on:
+  push:
+    tags:
+      - '*'           # Push events to every tag not containing /
+jobs:
+  Build-for-Linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Artifacts Pull
+      uses: actions/download-artifact@v4
+      with:
+        name: deb-file
+        path: |
+          minimdnsd_*.deb
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          minimdnsd_*.deb
+      env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
