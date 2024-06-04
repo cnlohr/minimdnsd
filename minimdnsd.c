@@ -63,6 +63,7 @@
 
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
 #define MDNS_PORT 5353
+#define RESOLVER_PORT 53
 
 const char * hostname_override;
 char         hostname[HOST_NAME_MAX+1];
@@ -75,6 +76,8 @@ struct sockaddr_in groupSock;
 int sdsock;
 int is_bound_6;
 int sdifaceupdown;
+int resolver;
+int resolver_listener;
 
 void ReloadHostname()
 {
@@ -329,7 +332,7 @@ uint8_t * ParseMDNSPath( uint8_t * dat, uint8_t * dataend, char * topop, int * l
 }
 
 
-static inline void HandleRX( int sock )
+static inline void HandleRX( int sock, int is_resovler )
 {
 	uint8_t buffer[9036]; // RFC6762 Section 6.1
 	char path[MAX_MDNS_PATH];
@@ -539,6 +542,11 @@ static inline void HandleRX( int sock )
 
 		// We could also reply with services here.
 
+		// If we are resolving, do the leg work.
+		if( !found && is_resolver )
+		{
+			
+		}
 	}
 	return;
 }
@@ -546,16 +554,20 @@ static inline void HandleRX( int sock )
 int main( int argc, char *argv[] )
 {
 	int c;
-	while ( ( c = getopt (argc, argv, "h:" ) ) != -1 )
+	while ( ( c = getopt (argc, argv, "rh:" ) ) != -1 )
 	{
 		switch (c)
 		{
-		case '?':
-			fprintf( stderr, "Error: Usage: minimdnsd [-h hostname override]\n" );
-			return -5;
 		case 'h':
 			hostname_override = optarg;
 			break;
+		case 'r':
+			resolver = socket( AF_INET, SOCK_DGRAM, 0 );
+			break;
+		default:
+		case '?':
+			fprintf( stderr, "Error: Usage: minimdnsd [-r] [-h hostname override]\n" );
+			return -5;
 		}
 	}
 
@@ -563,10 +575,40 @@ int main( int argc, char *argv[] )
 	ReloadHostname();
 
 	int inotifyfd = inotify_init1( IN_NONBLOCK );
-	hostname_watch = inotify_add_watch( inotifyfd, "/etc/hostname", IN_MODIFY | IN_CREATE );
-	if( hostname_watch < 0 )
+
+	if( !hostname_override )
 	{
-		fprintf( stderr, "WARNING: inotify cannot watch file\n" );
+		hostname_watch = inotify_add_watch( inotifyfd, "/etc/hostname", IN_MODIFY | IN_CREATE );
+		if( hostname_watch < 0 )
+		{
+			fprintf( stderr, "WARNING: inotify cannot watch file\n" );
+		}
+	}e
+
+	if( resolver < 0 )
+	{
+		fprintf( stderr, "FATAL: Resolver requested but unavailable.\n" );
+		return -5;
+	}
+
+	if( resolver )
+	{
+		int optval = 1;
+		if ( setsockopt( resolver, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
+		{
+			fprintf( stderr, "WARNING: Could not set SO_REUSEPORT on resolver\n" );
+			return -5;
+		}
+		struct sockaddr_in sin = {
+			.sin_family = AF_INET,
+			.sin_addr = inet_addr( "127.0.0.67" ),
+			.sin_port = htons( RESOLVER_PORT )
+		};
+		if ( bind( resolver, (struct sockaddr *)&sin, sizeof(sin) ) == -1 )
+		{
+			fprintf( stderr, "FATAL: Could not bind to IPv4 MDNS port (%d %s)\n", errno, strerror( errno ) );
+			return -5;
+		}
 	}
 
 #ifndef DISABLE_IPV6
@@ -688,14 +730,16 @@ int main( int argc, char *argv[] )
 
 	while ( 1 )
 	{
-		struct pollfd fds[3] = {
+		struct pollfd fds[4] = {
 			{ .fd = sdsock, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 			{ .fd = sdifaceupdown, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 			{ .fd = inotifyfd, .events = POLLIN, .revents = 0 },
+			{ .fd = resolver, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 		};
+		int polls = resolver ? 4 : 3;
 
 		// Make poll wait for literally forever.
-		r = poll( fds, sizeof( fds ) / sizeof( fds[0] ), -1 );
+		r = poll( fds, polls, -1 );
 
 		if ( r < 0 )
 		{
@@ -707,21 +751,21 @@ int main( int argc, char *argv[] )
 		{
 			if ( fds[0].revents & POLLIN )
 			{
-				HandleRX( sdsock );
+				HandleRX( sdsock, 0 );
 			}
 
 			if( fds[0].revents & ( POLLHUP | POLLERR ) )
 			{
 				fprintf( stderr, "Fatal: IPv6 socket experienced fault.  Aborting\n" );
 				return -14;
-			}			
+			}
 		}
 
 		if ( fds[1].revents )
 		{
 			if ( fds[1].revents & POLLIN )
 			{
-				HandleNetlinkData();
+				HandleNetlinkData( 0 );
 			}
 			if( fds[1].revents & ( POLLHUP | POLLERR ) )
 			{
@@ -736,6 +780,19 @@ int main( int argc, char *argv[] )
 			int r = read( inotifyfd, &event, sizeof( event ) );
 			r = r;
 			ReloadHostname();
+		}
+		if ( fds[3].revents )
+		{
+			if ( fds[3].revents & POLLIN )
+			{
+				HandleRX( resolver, 1 );
+			}
+
+			if( fds[3].revents & ( POLLHUP | POLLERR ) )
+			{
+				fprintf( stderr, "Fatal: resolver socket experienced fault.  Aborting\n" );
+				return -14;
+			}
 		}
 	}
 	return 0;
