@@ -24,3 +24,10 @@ jobs:
         name: deb-file
         path: |
           minimdnsd_*.deb
+     - name: Release
+       uses: softprops/action-gh-release@v1
+       with:
+         files: |
+           minimdnsd_*.deb
+       env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
