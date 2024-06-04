@@ -372,6 +372,13 @@ static inline void HandleRX( int sock, int is_resovler )
 		return;
 	}
 
+	if( r < 12 )
+	{
+		// Runt packet - can't do anything with these.
+		return;
+	}
+
+
 	int ifindex_debug = -1;
 	struct in_addr local_addr_4 = { 0 };
 	int ipv4_valid = 0;
@@ -543,9 +550,50 @@ static inline void HandleRX( int sock, int is_resovler )
 		// We could also reply with services here.
 
 		// If we are resolving, do the leg work.
-		if( !found && is_resolver )
+		if( !found && resolver )
 		{
-			
+			int pid_of_resolver = fork();
+			if( pid_of_resolver == 0 )
+			{
+				#define MAX_IFACES_SOCKS
+				int socks_to_send = socket( AF_INET, SOCK_DGRAM, 0 );
+				if( !socks_to_send )
+				{
+					fprintf( stderr, "WARNING: Could not create multicast message\n" );
+					exit( 0 );
+				}
+				struct sockaddr_in sin_multicast = {
+					.sin_family = AF_INET,
+					.sin_addr = inet_addr( "224.0.0.251" ),
+					.sin_port = htons( MDNS_PORT )
+				};
+
+				struct timeval tv;
+				tv.tv_sec = 3; // 3 second timeout
+				tv.tv_usec = 0;
+				if( setsockopt( socks_to_send, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) < 0 )
+				{
+					fprintf( stderr, "WARNING: Could not set sock option on repeated socket\n" );
+					close( socks_to_send );
+					exit( 0 );
+				}
+				printf( "Sending: %d\n", r );
+				if( sendto( socks_to_send, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sin_multicast, sizeof( sin_multicast ) ) < 0 )
+				{
+					fprintf( stderr, "WARNING: Could not repeat as MDNS request\n" );
+					close( socks_to_send );
+					exit( 0 );
+				}
+
+
+				printf( "RESOLVER RESOLVER %d\n", htons( sender.sin6_port ) );
+				r = recv( socks_to_send, buffer, sizeof(buffer), 0 );
+				printf( "RESOLVER RESOLVER GOT %d\n", r );
+				if( r > 0 )
+					sendto( sock, buffer, r, 0, (struct sockaddr*)&sender, sl );
+				close( socks_to_send );
+				exit( 0 );
+			}
 		}
 	}
 	return;
@@ -583,7 +631,7 @@ int main( int argc, char *argv[] )
 		{
 			fprintf( stderr, "WARNING: inotify cannot watch file\n" );
 		}
-	}e
+	}
 
 	if( resolver < 0 )
 	{
