@@ -1,10 +1,10 @@
 all : minimdnsd
 
-PACKAGE_VERSION:=0.1-$(shell cat .git/build_number)
+PACKAGE_VERSION:=0.1-$(shell cat .github/build_number)
 PACKAGE:=minimdnsd_$(PACKAGE_VERSION)
 
 minimdnsd : minimdnsd.c
-	echo $(shell expr 1 + $(shell cat .git/build_number)) > .git/build_number
+	echo $(shell expr 1 + $(shell cat .github/build_number)) > .github/build_number
 	gcc -o $@ $^ -Os -g
 	size $@
 
