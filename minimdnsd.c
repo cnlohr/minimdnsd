@@ -52,7 +52,7 @@
 #include <limits.h>
 #include <fcntl.h>
 
-#define DISABLE_IPV6
+//#define DISABLE_IPV6
 
 // For detecting interfaces going away or coming back.
 #include <linux/netlink.h>
