@@ -1,5 +1,6 @@
 name: Relase
-
+permissions:
+  contents: write
 on:
   push:
     tags:
