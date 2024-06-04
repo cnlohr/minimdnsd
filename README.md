@@ -10,7 +10,7 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
  * Only needs around 32kB RAM.
  * Compiles to between 15-45kB
  * Can run as a user or root.
- * Zero config + Watches for `/etc/hostname` changes.
+ * Zero config + Watches for `/etc/hostname` changes.  (Optionally: Can use -h to also watch for a host alias)
  * Works on IPv6
 
 ⚠️ Caveats ⚠️
@@ -21,6 +21,7 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
 
 1. To obviate need for avahi-daemon
 2. To provide an MDNS server on very simple systems
+3. To act as an educational tool for the following items
 
 ### To demonstrate the following:
 
