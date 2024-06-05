@@ -31,8 +31,11 @@
 //    actively needed.
 //  * Use of `recvmsg` to get the interface and address that a UDP packet is
 //    received on
+//  * Use optarg to parse command-line arguments.
 //  * But it does implement a fully function mnds server that advertises your
 //    host to other peers on your LAN!
+//  * Also, it's shim "dns server" that bridges DNS to MDNS.
+//
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -75,6 +78,7 @@ struct in_addr localInterface;
 struct sockaddr_in groupSock;
 
 int sdsock;
+int is_ipv4_only;
 int is_bound_6;
 int sdifaceupdown;
 int resolver;
@@ -204,7 +208,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		AddMDNSInterface4( &sa4->sin_addr );
 	}
 #ifndef DISABLE_IPV6
-	else if ( family == AF_INET6 )
+	else if ( family == AF_INET6 && !is_ipv4_only )
 	{
 		char addrbuff[INET6_ADDRSTRLEN+10] = { 0 }; // Actually 46 for IPv6, but let's add some buffer.
 		struct sockaddr_in6 * sa6 = (struct sockaddr_in6 *)addr;
@@ -443,7 +447,7 @@ static inline void HandleRX( int sock, int is_resolver )
 	if( flags & 0x8000 )
 		return;
 
-	int is_an_a_mdns_record_query = 0;
+	int is_a_suitable_mdns_record_query = 0;
 
 	int found = 0;
 
@@ -466,7 +470,10 @@ static inline void HandleRX( int sock, int is_resolver )
 		uint16_t record_type = ( dataptr[0] << 8 ) | dataptr[1];
 		uint16_t record_class = ( dataptr[2] << 8 ) | dataptr[3];
 
-		if( record_type == 1 ) is_an_a_mdns_record_query = 1;
+		if( ( record_type == 1 ) || ( !is_ipv4_only && ( record_type == 28 ) ) )
+		{
+			is_a_suitable_mdns_record_query = 1;
+		}
 
 		const char * path_first_dot = path;
 		const char * cpp = path;
@@ -545,7 +552,7 @@ static inline void HandleRX( int sock, int is_resolver )
 	{
 		// If we are resolving, just yolo this off to the rest of the network.
 		// As a note, Only IPv4 records are supported.  AAAA records seem to jank things up.
-		if( is_an_a_mdns_record_query )
+		if( is_a_suitable_mdns_record_query )
 		{
 			int pid_of_resolver = fork();
 			if( pid_of_resolver == 0 )
@@ -612,7 +619,7 @@ static inline void HandleRX( int sock, int is_resolver )
 int main( int argc, char *argv[] )
 {
 	int c;
-	while ( ( c = getopt (argc, argv, "rh:" ) ) != -1 )
+	while ( ( c = getopt (argc, argv, "r4h:" ) ) != -1 )
 	{
 		switch (c)
 		{
@@ -621,6 +628,9 @@ int main( int argc, char *argv[] )
 			break;
 		case 'r':
 			resolver = socket( AF_INET, SOCK_DGRAM, 0 );
+			break;
+		case '4':
+			is_ipv4_only = 1;
 			break;
 		default:
 		case '?':
@@ -671,26 +681,33 @@ int main( int argc, char *argv[] )
 	}
 
 #ifndef DISABLE_IPV6
-	sdsock = socket( AF_INET6, SOCK_DGRAM, 0 );
-	if ( sdsock < 0 )
+	if( !is_ipv4_only )
 	{
-		fprintf( stderr, "WARNING: Opening IPv6 datagram socket error.  Trying IPv4");
-		sdsock = socket( AF_INET, SOCK_DGRAM, 0 );
-		is_bound_6 = 0;
+		sdsock = socket( AF_INET6, SOCK_DGRAM, 0 );
+		if ( sdsock < 0 )
+		{
+			fprintf( stderr, "WARNING: Opening IPv6 datagram socket error.  Trying IPv4");
+			sdsock = socket( AF_INET, SOCK_DGRAM, 0 );
+			is_bound_6 = 0;
+		}
+		else
+		{
+			is_bound_6 = 1;
+		}
 	}
 	else
 	{
-		is_bound_6 = 1;
-	}
-#else
+#endif
 	sdsock = socket( AF_INET, SOCK_DGRAM, 0 );
 	if ( sdsock < 0 )
 	{
 		fprintf( stderr, "FATAL: Could not open IPv4 Socket\n");
 	}
+#ifndef DISABLE_IPV6
+	}
+#endif
 
 	is_bound_6 = 0;
-#endif
 
 	// Not just avahi, but other services, too will bind to 5353, but we can use
 	// SO_REUSEPORT to allow multiple people to bind simultaneously.
