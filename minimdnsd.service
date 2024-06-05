@@ -3,7 +3,7 @@ Description=minimdnsd server
 
 [Service]
 Type=simple
-ExecStart=minimdnsd -r -4
+ExecStart=minimdnsd -r
 
 
 [Install]
