@@ -49,7 +49,6 @@ deb : minimdnsd
 	echo 'case "$$1" in' >> $(PACKAGE)/DEBIAN/postinst
 	echo "  abort-upgrade|abort-remove|abort-deconfigure|configure)" >> $(PACKAGE)/DEBIAN/postinst
 	echo "    systemctl daemon-reload;systemctl enable minimdnsd.service; service minimdnsd restart" >> $(PACKAGE)/DEBIAN/postinst
-	echo "    mandb" >> $(PACKAGE)/DEBIAN/postinst
 	echo "    ;;" >> $(PACKAGE)/DEBIAN/postinst
 	echo "  triggered)" >> $(PACKAGE)/DEBIAN/postinst
 	echo "    systemctl daemon-reload; service minimdnsd restart" >> $(PACKAGE)/DEBIAN/postinst
