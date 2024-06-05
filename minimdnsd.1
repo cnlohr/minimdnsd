@@ -1,16 +1,16 @@
-.TH MINIMDNS 1 "June 2024" "version 0.1" "User Manuals"
+.TH MINIMDNSD 1 "June 2024" "version 0.1" "User Manuals"
 .SH "NAME"
 minimdns \- Minimal MDNS server
 .SH "SYNOPSIS"
-.B minimdns minimdns [-h host_override] [-r]
+.B minimdnsd [-h host_alias_override] [-r]
 .SH "DESCRIPTION"
-.B cnping
+.B minimdnsd
 is a minimal MDNS server, able to reply to other computers on the
 network at (your hostname).local
 .SH "OPTIONS"
 Usually this is intended to be used without any -h flag.
 .IP -h
-Specify a hostname override instead of using /etc/hostname
+Specify a hostname override instead of using /etc/hostname - you can launch multiple instances, to get multiple overrides.
 .IP -r
 Create a dummy responder, it listens on 127.0.0.67:53 and forwards requests to 224.0.0.251:5353, but note: may or may not forward AAAA requests.
 .SH "AUTHOR"
