@@ -63,6 +63,8 @@
 
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
 #define MDNS_PORT 5353
+#define RESOLVER_PORT 53
+#define RESOLVER_IP "127.0.0.67"
 
 const char * hostname_override;
 char         hostname[HOST_NAME_MAX+1];
@@ -75,6 +77,8 @@ struct sockaddr_in groupSock;
 int sdsock;
 int is_bound_6;
 int sdifaceupdown;
+int resolver;
+int resolver_listener;
 
 void ReloadHostname()
 {
@@ -329,7 +333,7 @@ uint8_t * ParseMDNSPath( uint8_t * dat, uint8_t * dataend, char * topop, int * l
 }
 
 
-static inline void HandleRX( int sock )
+static inline void HandleRX( int sock, int is_resolver )
 {
 	uint8_t buffer[9036]; // RFC6762 Section 6.1
 	char path[MAX_MDNS_PATH];
@@ -368,6 +372,13 @@ static inline void HandleRX( int sock )
 		// This should basically never happen.
 		return;
 	}
+
+	if( r < 12 )
+	{
+		// Runt packet - can't do anything with these.
+		return;
+	}
+
 
 	int ifindex_debug = -1;
 	struct in_addr local_addr_4 = { 0 };
@@ -432,6 +443,10 @@ static inline void HandleRX( int sock )
 	if( flags & 0x8000 )
 		return;
 
+	int is_an_a_mdns_record_query = 0;
+
+	int found = 0;
+
 	//Query
 	for( i = 0; i < questions; i++ )
 	{
@@ -440,25 +455,18 @@ static inline void HandleRX( int sock )
 		dataptr = ParseMDNSPath( dataptr, dataend, path, &stlen );
 
 		// Make sure there is still room left for the rest of the record.
-		if( dataend - dataptr < 4 ) return;
-
-		if( !dataptr )
-		{
-			return;
-		}
+		if( dataend - dataptr < 4 ) break;
+		if( !dataptr ) break;
 
 		int pathlen = strlen( path );
-		if( pathlen < 6 )
-		{
-			continue;
-		}
-		if( strcmp( path + pathlen - 6, ".local" ) != 0 )
-		{
-			continue;
-		}
+
+		if( pathlen < 6 ) continue;
+		if( strcmp( path + pathlen - 6, ".local" ) != 0 ) continue;
 
 		uint16_t record_type = ( dataptr[0] << 8 ) | dataptr[1];
 		uint16_t record_class = ( dataptr[2] << 8 ) | dataptr[3];
+
+		if( record_type == 1 ) is_an_a_mdns_record_query = 1;
 
 		const char * path_first_dot = path;
 		const char * cpp = path;
@@ -471,8 +479,6 @@ static inline void HandleRX( int sock )
 		}
 		else
 			path_first_dot = 0;
-
-		int found = 0;
 
 		if( hostname[0] && dotlen && dotlen == hostnamelen && memcmp( hostname, path, dotlen ) == 0 )
 		{
@@ -517,14 +523,7 @@ static inline void HandleRX( int sock )
 #ifndef DISABLE_IPV6
 			else if( sendAAAA )
 			{
-//				memcpy( obptr, namestartptr, stlen+1 ); //Hack: Copy the name in.
-//				obptr += stlen+1;
-//				*(obptr++) = 0;
-//				*(obptr++) = 0x00; *(obptr++) = 0x1c; // AAAA record
-//				*(obptr++) = 0x80; *(obptr++) = 0x01; //Flush cache + in ptr.
-//				*(obptr++) = 0x00; *(obptr++) = 0x00; //TTL
-//				*(obptr++) = 0x00; *(obptr++) = 240;  //240 seconds (4 minutes)
-				*(obptr++) = 0x00; *(obptr++) = 0x10; //Size 4 (IP)				
+				*(obptr++) = 0x00; *(obptr++) = 0x10; //Size 16 (IPv6)
 				memcpy( obptr, &local_addr_6.s6_addr, 16 );
 				obptr+=16;
 			}
@@ -535,10 +534,77 @@ static inline void HandleRX( int sock )
 
 			found = 1;
 		}
+	}
 
 
-		// We could also reply with services here.
+	// We could also reply with services here.
 
+	// But, if we aren't sending a response, and we're a resolver, we have to do more work.
+//	printf( "CHECK: %d %d %d %d\n", found, is_resolver, resolver, is_an_a_mdns_record_query );
+	if( !found && is_resolver && resolver )
+	{
+		// If we are resolving, just yolo this off to the rest of the network.
+		// As a note, Only IPv4 records are supported.  AAAA records seem to jank things up.
+		if( is_an_a_mdns_record_query )
+		{
+			int pid_of_resolver = fork();
+			if( pid_of_resolver == 0 )
+			{
+				#define MAX_IFACES_SOCKS
+				int socks_to_send = socket( AF_INET, SOCK_DGRAM, 0 );
+				if( !socks_to_send )
+				{
+					fprintf( stderr, "WARNING: Could not create multicast message\n" );
+					exit( 0 );
+				}
+				struct sockaddr_in sin_multicast = {
+					.sin_family = AF_INET,
+					.sin_addr = inet_addr( "224.0.0.251" ),
+					//.sin_addr = inet_addr( "192.168.1.255" ),
+					.sin_port = htons( MDNS_PORT )
+				};
+
+				int loopbackEnable = 0;
+				if( setsockopt( socks_to_send, IPPROTO_IP, IP_MULTICAST_LOOP, &loopbackEnable, sizeof( loopbackEnable ) ) < 0 )
+				{
+					fprintf( stderr, "WARNING: Cannot prevent self-looping of mdns packets\n" );
+					exit( 0 );
+				}
+
+				struct timeval tv = { .tv_sec = 3 };
+				if( setsockopt( socks_to_send, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof( tv ) ) < 0 )
+				{
+					fprintf( stderr, "WARNING: Could not set sock option on repeated socket\n" );
+					close( socks_to_send );
+					exit( 0 );
+				}
+
+				if( sendto( socks_to_send, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sin_multicast, sizeof( sin_multicast ) ) < 0 )
+				{
+					fprintf( stderr, "WARNING: Could not repeat as MDNS request\n" );
+					close( socks_to_send );
+					exit( 0 );
+				}
+
+				r = recv( socks_to_send, buffer, sizeof(buffer), 0 );
+
+				if( r > 0 )
+					sendto( sock, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sender, sl );
+
+				close( socks_to_send );
+
+				exit( 0 );
+			}
+		}
+		else
+		{
+			// We want to make them go away.
+			uint16_t * psr = (uint16_t*)buffer;
+			//  psr[0] is the transaction ID
+			psr[1] = 0x8100; // If we wanted, we could set this to be 0x8103, to say "no such name" - but then if there's an AAAA query as well, that will cancel out an A query.
+			// Send the packet back at them.
+			sendto( sock, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sender, sl );
+		}
 	}
 	return;
 }
@@ -546,16 +612,20 @@ static inline void HandleRX( int sock )
 int main( int argc, char *argv[] )
 {
 	int c;
-	while ( ( c = getopt (argc, argv, "h:" ) ) != -1 )
+	while ( ( c = getopt (argc, argv, "rh:" ) ) != -1 )
 	{
 		switch (c)
 		{
-		case '?':
-			fprintf( stderr, "Error: Usage: minimdnsd [-h hostname override]\n" );
-			return -5;
 		case 'h':
 			hostname_override = optarg;
 			break;
+		case 'r':
+			resolver = socket( AF_INET, SOCK_DGRAM, 0 );
+			break;
+		default:
+		case '?':
+			fprintf( stderr, "Error: Usage: minimdnsd [-r] [-h hostname override]\n" );
+			return -5;
 		}
 	}
 
@@ -563,10 +633,41 @@ int main( int argc, char *argv[] )
 	ReloadHostname();
 
 	int inotifyfd = inotify_init1( IN_NONBLOCK );
-	hostname_watch = inotify_add_watch( inotifyfd, "/etc/hostname", IN_MODIFY | IN_CREATE );
-	if( hostname_watch < 0 )
+
+	if( !hostname_override )
 	{
-		fprintf( stderr, "WARNING: inotify cannot watch file\n" );
+		hostname_watch = inotify_add_watch( inotifyfd, "/etc/hostname", IN_MODIFY | IN_CREATE );
+		if( hostname_watch < 0 )
+		{
+			fprintf( stderr, "WARNING: inotify cannot watch file\n" );
+		}
+	}
+
+	if( resolver < 0 )
+	{
+		fprintf( stderr, "FATAL: Resolver requested but unavailable.\n" );
+		return -5;
+	}
+
+	if( resolver )
+	{
+		int optval = 1;
+		if ( setsockopt( resolver, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
+		{
+			fprintf( stderr, "WARNING: Could not set SO_REUSEPORT on resolver\n" );
+			return -5;
+		}
+		struct sockaddr_in sin_resolve = {
+			.sin_family = AF_INET,
+			.sin_addr = inet_addr( RESOLVER_IP ),
+			.sin_port = htons( RESOLVER_PORT )
+		};
+		if ( bind( resolver, (struct sockaddr *)&sin_resolve, sizeof(sin_resolve) ) == -1 )
+		{
+			fprintf( stderr, "FATAL: Could not bind to IPv4 MDNS port (%d %s)\n", errno, strerror( errno ) );
+			return -5;
+		}
+		printf( "Resolver configured on \"%s\"\n", RESOLVER_IP );
 	}
 
 #ifndef DISABLE_IPV6
@@ -688,14 +789,17 @@ int main( int argc, char *argv[] )
 
 	while ( 1 )
 	{
-		struct pollfd fds[3] = {
+		struct pollfd fds[4] = {
 			{ .fd = sdsock, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 			{ .fd = sdifaceupdown, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 			{ .fd = inotifyfd, .events = POLLIN, .revents = 0 },
+			{ .fd = resolver, .events = POLLIN | POLLHUP | POLLERR, .revents = 0 },
 		};
 
+		int polls = resolver ? 4 : 3;
+
 		// Make poll wait for literally forever.
-		r = poll( fds, sizeof( fds ) / sizeof( fds[0] ), -1 );
+		r = poll( fds, polls, -1 );
 
 		if ( r < 0 )
 		{
@@ -707,21 +811,21 @@ int main( int argc, char *argv[] )
 		{
 			if ( fds[0].revents & POLLIN )
 			{
-				HandleRX( sdsock );
+				HandleRX( sdsock, 0 );
 			}
 
 			if( fds[0].revents & ( POLLHUP | POLLERR ) )
 			{
 				fprintf( stderr, "Fatal: IPv6 socket experienced fault.  Aborting\n" );
 				return -14;
-			}			
+			}
 		}
 
 		if ( fds[1].revents )
 		{
 			if ( fds[1].revents & POLLIN )
 			{
-				HandleNetlinkData();
+				HandleNetlinkData( 0 );
 			}
 			if( fds[1].revents & ( POLLHUP | POLLERR ) )
 			{
@@ -736,6 +840,19 @@ int main( int argc, char *argv[] )
 			int r = read( inotifyfd, &event, sizeof( event ) );
 			r = r;
 			ReloadHostname();
+		}
+		if ( fds[3].revents )
+		{
+			if ( fds[3].revents & POLLIN )
+			{
+				HandleRX( resolver, 1 );
+			}
+
+			if ( fds[3].revents & ( POLLHUP | POLLERR ) )
+			{
+				fprintf( stderr, "Fatal: resolver socket experienced fault.  Aborting\n" );
+				return -14;
+			}
 		}
 	}
 	return 0;
