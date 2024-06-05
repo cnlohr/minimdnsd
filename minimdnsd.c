@@ -707,8 +707,6 @@ int main( int argc, char *argv[] )
 	}
 #endif
 
-	is_bound_6 = 0;
-
 	// Not just avahi, but other services, too will bind to 5353, but we can use
 	// SO_REUSEPORT to allow multiple people to bind simultaneously.
 	int optval = 1;
