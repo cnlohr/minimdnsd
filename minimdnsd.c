@@ -55,14 +55,17 @@
 #include <limits.h>
 #include <fcntl.h>
 
-//#define DISABLE_IPV6
-
 // For detecting interfaces going away or coming back.
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 
 // For detecting "hostname" change.
 #include <sys/inotify.h>
+
+// For DNS -> MDNS forwarding we use fork/wait
+#include <sys/wait.h>
+
+//#define DISABLE_IPV6
 
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
 #define MDNS_PORT 5353
@@ -90,7 +93,7 @@ int sdifaceupdown;
 int resolver;
 int resolver_listener;
 
-void ReloadHostname()
+static void ReloadHostname( void )
 {
 	if( hostname_override )
 	{
@@ -227,7 +230,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 	return 0;
 }
 
-int HandleRequestingInterfaces()
+static int HandleRequestingInterfaces( void )
 {
 	struct ifaddrs * ifaddr = 0;
 	if ( getifaddrs( &ifaddr ) == -1 )
@@ -247,7 +250,7 @@ int HandleRequestingInterfaces()
 	return 0;
 }
 
-static inline void HandleNetlinkData()
+static inline void HandleNetlinkData( void )
 {
 	int len;
 	struct nlmsghdr *nlh;
@@ -674,6 +677,9 @@ int main( int argc, char *argv[] )
 
 	if( resolver )
 	{
+		// The resolver uses child processes.  To clean up zombies, we catch SIGCHILD.
+		//signal( SIGCHLD, &ChildProcessComplete );
+
 		int optval = 1;
 		if ( setsockopt( resolver, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
 		{
@@ -817,7 +823,6 @@ int main( int argc, char *argv[] )
 		}
 	} while ( r != 0 );
 
-
 	while ( 1 )
 	{
 		struct pollfd fds[4] = {
@@ -836,7 +841,7 @@ int main( int argc, char *argv[] )
 
 		if ( r < 0 )
 		{
-			fprintf( stderr, "Fatal: Poll failed\n" );
+			fprintf( stderr, "Fatal: poll = %d failed (%d %s)\n", r, errno, strerror( errno ) );
 			return -10;
 		}
 
@@ -858,7 +863,7 @@ int main( int argc, char *argv[] )
 		{
 			if ( fds[1].revents & POLLIN )
 			{
-				HandleNetlinkData( 0 );
+				HandleNetlinkData( );
 			}
 			if( fds[1].revents & ( POLLHUP | POLLERR ) )
 			{
@@ -886,6 +891,15 @@ int main( int argc, char *argv[] )
 				fprintf( stderr, "Fatal: resolver socket experienced fault.  Aborting\n" );
 				return -14;
 			}
+		}
+
+		// Cleanup any remaining zombie processes from resolver.
+		// Could also be done in a SIGCHLD signal handler, but that would
+		// Interrupt the poll.
+		if( resolver )
+		{
+			int wstat;
+			wait3( &wstat, WNOHANG, NULL );
 		}
 	}
 	return 0;
