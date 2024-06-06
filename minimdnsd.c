@@ -241,8 +241,8 @@ int HandleRequestingInterfaces()
 		{
 			struct sockaddr * addr = ifa->ifa_addr;
 			CheckAndAddMulticast( addr );
-			freeifaddrs( ifaddr );
 		}
+		freeifaddrs( ifaddr );
 	}
 	return 0;
 }
