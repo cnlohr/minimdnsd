@@ -606,7 +606,6 @@ static inline void HandleRX( int sock, int is_resolver )
 				for( ;; )
 				{
 					r = recv( socks_to_send, buffer, sizeof(buffer), 0 );
-printf( "RR: %d\n", r );
 					if( r <= 0 )
 						break;
 
