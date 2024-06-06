@@ -55,14 +55,17 @@
 #include <limits.h>
 #include <fcntl.h>
 
-//#define DISABLE_IPV6
-
 // For detecting interfaces going away or coming back.
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 
 // For detecting "hostname" change.
 #include <sys/inotify.h>
+
+// For DNS -> MDNS forwarding we use fork/wait
+#include <sys/wait.h>
+
+//#define DISABLE_IPV6
 
 #define MAX_MDNS_PATH (HOST_NAME_MAX+8)
 #define MDNS_PORT 5353
@@ -90,7 +93,7 @@ int sdifaceupdown;
 int resolver;
 int resolver_listener;
 
-void ReloadHostname()
+static void ReloadHostname( void )
 {
 	if( hostname_override )
 	{
@@ -227,7 +230,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 	return 0;
 }
 
-int HandleRequestingInterfaces()
+static int HandleRequestingInterfaces( void )
 {
 	struct ifaddrs * ifaddr = 0;
 	if ( getifaddrs( &ifaddr ) == -1 )
@@ -247,7 +250,7 @@ int HandleRequestingInterfaces()
 	return 0;
 }
 
-static inline void HandleNetlinkData()
+static inline void HandleNetlinkData( void )
 {
 	int len;
 	struct nlmsghdr *nlh;
@@ -468,8 +471,7 @@ static inline void HandleRX( int sock, int is_resolver )
 
 		int pathlen = strlen( path );
 
-		if( pathlen < 6 ) continue;
-		if( strcmp( path + pathlen - 6, ".local" ) != 0 ) continue;
+		if( pathlen < 6 || strcmp( path + pathlen - 6, ".local" ) != 0 ) continue;
 
 		uint16_t record_type = ( dataptr[0] << 8 ) | dataptr[1];
 
@@ -561,8 +563,11 @@ static inline void HandleRX( int sock, int is_resolver )
 		if( is_a_suitable_mdns_record_query )
 		{
 			int pid_of_resolver = fork();
+
 			if( pid_of_resolver == 0 )
 			{
+				// This is a fork()'d pid - from here on out we have to make sure to exit.
+
 				#define MAX_IFACES_SOCKS
 				int socks_to_send = socket( AF_INET, SOCK_DGRAM, 0 );
 				if( !socks_to_send )
@@ -598,13 +603,19 @@ static inline void HandleRX( int sock, int is_resolver )
 					exit( 0 );
 				}
 
-				r = recv( socks_to_send, buffer, sizeof(buffer), 0 );
+				for( ;; )
+				{
+					r = recv( socks_to_send, buffer, sizeof(buffer), 0 );
+					if( r <= 0 )
+						break;
 
-				if( r > 0 )
-					sendto( sock, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sender, sl );
+					// If the packet is a reply, not a question, we can forward it back to the asker.
+					uint16_t flags = ntohs( ((uint16_t*)buffer)[1] );
+					if( ( flags & 0x8000 ) )
+						sendto( sock, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sender, sl );
+				}
 
 				close( socks_to_send );
-
 				exit( 0 );
 			}
 		}
@@ -665,6 +676,9 @@ int main( int argc, char *argv[] )
 
 	if( resolver )
 	{
+		// The resolver uses child processes.  To clean up zombies, we catch SIGCHILD.
+		//signal( SIGCHLD, &ChildProcessComplete );
+
 		int optval = 1;
 		if ( setsockopt( resolver, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
 		{
@@ -808,7 +822,6 @@ int main( int argc, char *argv[] )
 		}
 	} while ( r != 0 );
 
-
 	while ( 1 )
 	{
 		struct pollfd fds[4] = {
@@ -827,7 +840,7 @@ int main( int argc, char *argv[] )
 
 		if ( r < 0 )
 		{
-			fprintf( stderr, "Fatal: Poll failed\n" );
+			fprintf( stderr, "Fatal: poll = %d failed (%d %s)\n", r, errno, strerror( errno ) );
 			return -10;
 		}
 
@@ -849,7 +862,7 @@ int main( int argc, char *argv[] )
 		{
 			if ( fds[1].revents & POLLIN )
 			{
-				HandleNetlinkData( 0 );
+				HandleNetlinkData( );
 			}
 			if( fds[1].revents & ( POLLHUP | POLLERR ) )
 			{
@@ -877,6 +890,15 @@ int main( int argc, char *argv[] )
 				fprintf( stderr, "Fatal: resolver socket experienced fault.  Aborting\n" );
 				return -14;
 			}
+		}
+
+		// Cleanup any remaining zombie processes from resolver.
+		// Could also be done in a SIGCHLD signal handler, but that would
+		// Interrupt the poll.
+		if( resolver )
+		{
+			int wstat;
+			wait3( &wstat, WNOHANG, NULL );
 		}
 	}
 	return 0;
