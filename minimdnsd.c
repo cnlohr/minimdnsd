@@ -312,8 +312,10 @@ uint8_t * ParseMDNSPath( uint8_t * dat, uint8_t * dataend, char * topop, int * l
 
 	while(dat != dataend)
 	{
+		// See how long the string we should read is.
 		l = *(dat++);
 
+		// Zero-length strings indicate end-of-string.
 		if( l == 0 )
 			break;
 
@@ -334,6 +336,8 @@ uint8_t * ParseMDNSPath( uint8_t * dat, uint8_t * dataend, char * topop, int * l
 			else
 				topop[j] = dat[j];
 		}
+
+		// Move along in the string, if there are more strings to concatenate.
 		topop += l;
 		dat += l;
 		*len += l;
