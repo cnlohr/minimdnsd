@@ -101,7 +101,7 @@ void ReloadHostname()
 		}
 		memcpy( hostname, hostname_override, hostnamelen );
 		hostname[hostnamelen] = 0;
-		printf( "Using overridden name: \"%s\"\n", hostname );
+		printf( "Using overridden name: \"%s.local\"\n", hostname );
 		return;
 	}
 
@@ -134,7 +134,7 @@ void ReloadHostname()
 	}
 	hostname[hostnamelen] = 0;
 
-	printf( "Responding to hostname: \"%s\"\n", hostname );
+	printf( "Responding to hostname: \"%s.local\"\n", hostname );
 	fflush( stdout );
 	return;
 
@@ -307,16 +307,18 @@ uint8_t * ParseMDNSPath( uint8_t * dat, uint8_t * dataend, char * topop, int * l
 {
 	int l;
 	int j;
+
 	*len = 0;
-	do
+
+	while(dat != dataend)
 	{
 		l = *(dat++);
-		if( l == 0 || dat == dataend )
-		{
-			*topop = 0;
-			return dat;
-		}
-		if( *len + l >= MAX_MDNS_PATH ) return 0;
+
+		if( l == 0 )
+			break;
+
+		if( *len + l >= MAX_MDNS_PATH )
+			return 0;
 
 		//If not our first time through, add a '.'
 		if( *len != 0 )
@@ -334,9 +336,11 @@ uint8_t * ParseMDNSPath( uint8_t * dat, uint8_t * dataend, char * topop, int * l
 		}
 		topop += l;
 		dat += l;
-		*topop = 0; //Null terminate.
 		*len += l;
-	} while( 1 );
+	}
+
+	*topop = 0; //Null terminate.
+	return dat;
 }
 
 
@@ -460,8 +464,7 @@ static inline void HandleRX( int sock, int is_resolver )
 		dataptr = ParseMDNSPath( dataptr, dataend, path, &stlen );
 
 		// Make sure there is still room left for the rest of the record.
-		if( dataend - dataptr < 4 ) break;
-		if( !dataptr ) break;
+		if( !dataptr || dataend - dataptr < 4 ) break;
 
 		int pathlen = strlen( path );
 
@@ -716,6 +719,11 @@ int main( int argc, char *argv[] )
 		fprintf( stderr, "WARNING: Could not set SO_REUSEPORT\n" );
 	}
 
+	if ( setsockopt( sdsock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof( optval ) ) != 0 )
+	{
+		fprintf( stderr, "WARNING: Could not set SO_REUSEADDR\n" );
+	}
+
 	// We have to enable PKTINFO so we can use recvmsg, so we can get desination address
 	// so we can reply accordingly.
 	if( setsockopt( sdsock, IPPROTO_IP, IP_PKTINFO, &optval, sizeof( optval ) ) != 0 )
@@ -814,6 +822,8 @@ int main( int argc, char *argv[] )
 
 		// Make poll wait for literally forever.
 		r = poll( fds, polls, -1 );
+
+		//printf( "%d: %d / %d / %d / %d\n", r, fds[0].revents, fds[1].revents, fds[2].revents, fds[3].revents );
 
 		if ( r < 0 )
 		{
