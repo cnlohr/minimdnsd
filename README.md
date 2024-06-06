@@ -31,6 +31,7 @@ Primarily MDNS Hostname responder - i.e. run this, and any computer on your netw
 4. Use of multicast in IPv4 and IPv6 to join a multicast group
 5. Use of `recvmsg` to get the interface and address that a UDP packet is received on
 6. Use of `optarg` to handle command-line parameters.
+7. Use of `fork()` and `wait3()` to handle workers. (Only used in DNS forwarding mode)
 
 ### And for general housekeeping:
 
