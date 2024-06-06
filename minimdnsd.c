@@ -468,8 +468,7 @@ static inline void HandleRX( int sock, int is_resolver )
 
 		int pathlen = strlen( path );
 
-		if( pathlen < 6 ) continue;
-		if( strcmp( path + pathlen - 6, ".local" ) != 0 ) continue;
+		if( pathlen < 6 || strcmp( path + pathlen - 6, ".local" ) != 0 ) continue;
 
 		uint16_t record_type = ( dataptr[0] << 8 ) | dataptr[1];
 
@@ -561,8 +560,11 @@ static inline void HandleRX( int sock, int is_resolver )
 		if( is_a_suitable_mdns_record_query )
 		{
 			int pid_of_resolver = fork();
+
 			if( pid_of_resolver == 0 )
 			{
+				// This is a fork()'d pid - from here on out we have to make sure to exit.
+
 				#define MAX_IFACES_SOCKS
 				int socks_to_send = socket( AF_INET, SOCK_DGRAM, 0 );
 				if( !socks_to_send )
@@ -598,13 +600,20 @@ static inline void HandleRX( int sock, int is_resolver )
 					exit( 0 );
 				}
 
-				r = recv( socks_to_send, buffer, sizeof(buffer), 0 );
+				for( ;; )
+				{
+					r = recv( socks_to_send, buffer, sizeof(buffer), 0 );
+printf( "RR: %d\n", r );
+					if( r <= 0 )
+						break;
 
-				if( r > 0 )
-					sendto( sock, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sender, sl );
+					// If the packet is a reply, not a question, we can forward it back to the asker.
+					uint16_t flags = ntohs( ((uint16_t*)buffer)[1] );
+					if( ( flags & 0x8000 ) )
+						sendto( sock, buffer, r, MSG_NOSIGNAL, (struct sockaddr*)&sender, sl );
+				}
 
 				close( socks_to_send );
-
 				exit( 0 );
 			}
 		}
