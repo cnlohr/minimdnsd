@@ -69,6 +69,12 @@
 #define RESOLVER_PORT 53
 #define RESOLVER_IP "127.0.0.67"
 
+# if __BYTE_ORDER == __BIG_ENDIAN
+#define MDNS_BRD_ADDR ((in_addr_t) 0xe00000fb)  // 224.0.0.251
+#else
+#define MDNS_BRD_ADDR ((in_addr_t) 0xfb0000e0)  // 224.0.0.251
+#endif
+
 const char * hostname_override;
 char         hostname[HOST_NAME_MAX+1];
 int          hostnamelen = 0;
@@ -156,10 +162,8 @@ void AddMDNSInterface6( int interface )
 
 void AddMDNSInterface4( struct in_addr * saddr )
 {
-	// Multicast v4 = 224.0.0.251
-
 	struct ip_mreq mreq = {
-		.imr_multiaddr.s_addr = inet_addr( "224.0.0.251" ),
+		.imr_multiaddr.s_addr = MDNS_BRD_ADDR,
 		.imr_interface = *saddr
 	};
 	if ( setsockopt( sdsock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) == -1)
@@ -215,7 +219,7 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 		const char * addrout = inet_ntop( family, &sa6->sin6_addr, addrbuff, sizeof( addrbuff ) - 1 );
 		int local = IsAddress6Local( &sa6->sin6_addr );
 		if ( !local ) return -3;
-		printf( "Multicast adding interface: %d\n", sa6->sin6_scope_id );
+		printf( "Multicast adding interface: %d (%s)\n", sa6->sin6_scope_id, addrout );
 		fflush( stdout );
 		AddMDNSInterface6( sa6->sin6_scope_id );
 	}
@@ -225,7 +229,6 @@ int CheckAndAddMulticast( struct sockaddr * addr )
 
 int HandleRequestingInterfaces()
 {
-	static int failcount;
 	struct ifaddrs * ifaddr = 0;
 	if ( getifaddrs( &ifaddr ) == -1 )
 	{
@@ -234,7 +237,6 @@ int HandleRequestingInterfaces()
 	}
 	else
 	{
-		failcount = 0;
 		for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
 		{
 			struct sockaddr * addr = ifa->ifa_addr;
@@ -341,7 +343,7 @@ static inline void HandleRX( int sock, int is_resolver )
 {
 	uint8_t buffer[9036]; // RFC6762 Section 6.1
 	char path[MAX_MDNS_PATH];
-	int i, j, stlen;
+	int i, stlen;
 
 	struct sockaddr_in6 sender = { 0 };
 	socklen_t sl = sizeof( sender );
@@ -352,7 +354,6 @@ static inline void HandleRX( int sock, int is_resolver )
 	// interface, we can instead, just recvmsg and discern which interfaces the message
 	// came frmo.
 
-	struct sockaddr_in peeraddr;
 	// if you want access to the data you need to init the msg_iovec fields
 	struct iovec iov = {
 		.iov_base = buffer,
@@ -384,7 +385,6 @@ static inline void HandleRX( int sock, int is_resolver )
 	}
 
 
-	int ifindex_debug = -1;
 	struct in_addr local_addr_4 = { 0 };
 	int ipv4_valid = 0;
 #ifndef DISABLE_IPV6
@@ -423,7 +423,6 @@ static inline void HandleRX( int sock, int is_resolver )
 
 			local_addr_6 = pi->ipi6_addr;
 			ipv6_valid = 1;
-			ifindex_debug = pi->ipi6_ifindex;
 
 			//int i;
 			//for( i = 0; i < sizeof( local_addr_6 ); i++ )
@@ -437,7 +436,8 @@ static inline void HandleRX( int sock, int is_resolver )
 	uint16_t xactionid = ntohs( psr[0] );
 	uint16_t flags = ntohs( psr[1] );
 	uint16_t questions = ntohs( psr[2] );
-	uint16_t answers = ntohs( psr[3] );
+	// We discard answers.
+	//uint16_t answers = ntohs( psr[3] );
 
 	// Tricky - index 12 bytes in, we can do a direct reply.
 	uint8_t * dataptr = (uint8_t*)buffer + 12;
@@ -468,7 +468,9 @@ static inline void HandleRX( int sock, int is_resolver )
 		if( strcmp( path + pathlen - 6, ".local" ) != 0 ) continue;
 
 		uint16_t record_type = ( dataptr[0] << 8 ) | dataptr[1];
-		uint16_t record_class = ( dataptr[2] << 8 ) | dataptr[3];
+
+		// Record class is not used.
+		//uint16_t record_class = ( dataptr[2] << 8 ) | dataptr[3];
 
 		if( ( record_type == 1 ) || ( !is_ipv4_only && ( record_type == 28 ) ) )
 		{
@@ -566,8 +568,7 @@ static inline void HandleRX( int sock, int is_resolver )
 				}
 				struct sockaddr_in sin_multicast = {
 					.sin_family = AF_INET,
-					.sin_addr = inet_addr( "224.0.0.251" ),
-					//.sin_addr = inet_addr( "192.168.1.255" ),
+					.sin_addr = { MDNS_BRD_ADDR },
 					.sin_port = htons( MDNS_PORT )
 				};
 
@@ -639,7 +640,6 @@ int main( int argc, char *argv[] )
 		}
 	}
 
-	struct sockaddr_in respsock;
 	ReloadHostname();
 
 	int inotifyfd = inotify_init1( IN_NONBLOCK );
@@ -669,7 +669,7 @@ int main( int argc, char *argv[] )
 		}
 		struct sockaddr_in sin_resolve = {
 			.sin_family = AF_INET,
-			.sin_addr = inet_addr( RESOLVER_IP ),
+			.sin_addr = { inet_addr( RESOLVER_IP ) },
 			.sin_port = htons( RESOLVER_PORT )
 		};
 		if ( bind( resolver, (struct sockaddr *)&sin_resolve, sizeof(sin_resolve) ) == -1 )
@@ -771,7 +771,7 @@ int main( int argc, char *argv[] )
 	{
 		struct sockaddr_in sin = {
 			.sin_family = AF_INET,
-			.sin_addr = INADDR_ANY,
+			.sin_addr = { INADDR_ANY },
 			.sin_port = htons( MDNS_PORT )
 		};
 		if ( bind( sdsock, (struct sockaddr *)&sin, sizeof(sin) ) == -1 )
@@ -780,8 +780,6 @@ int main( int argc, char *argv[] )
 			exit(-1);
 		}
 	}
-
-	char ** lastiplist = 0;
 
 	// Some things online recommend using IPPROTO_IP, IP_MULTICAST_LOOP
 	// But, we can just ignore the replies.

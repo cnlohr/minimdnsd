@@ -5,9 +5,11 @@ PACKAGE:=minimdnsd_$(PACKAGE_VERSION)
 
 SHELL=/bin/bash
 
+CFLAGS:=-Wall -pedantic -Os -g -flto -ffunction-sections -Wl,--gc-sections -fdata-sections
+
 minimdnsd : minimdnsd.c
 	echo $(shell expr 1 + $(shell cat .github/build_number)) > .github/build_number
-	gcc -o $@ $^ -Os -g
+	gcc -o $@ $^ $(CFLAGS)
 	size $@
 
 install : minimdnsd

@@ -64,3 +64,11 @@ https://superuser.com/questions/1086954/how-do-i-use-mdns-for-ssh-6
 
 And ping6 has a similar issue.
 
+### Thanks
+
+
+For code reviews: @GPSBabelDeveloper, @probonopd
+
+
+
+
