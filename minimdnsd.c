@@ -399,6 +399,7 @@ static inline void HandleRX( int sock, int is_resolver )
 
 	struct in_addr local_addr_4 = { 0 };
 	int ipv4_valid = 0;
+	int ifindex = -1;
 #ifndef DISABLE_IPV6
 	struct in6_addr local_addr_6 = { 0 };
 	int ipv6_valid = 0;
@@ -433,7 +434,9 @@ static inline void HandleRX( int sock, int is_resolver )
 
 			struct in6_pktinfo_shadow * pi = (struct in6_pktinfo_shadow *)CMSG_DATA(cmsg);
 
+			// Warning: If this is actually from an IPv4 packet, it can't be trusted.
 			local_addr_6 = pi->ipi6_addr;
+			ifindex = pi->ipi6_ifindex;
 			ipv6_valid = 1;
 
 			//int i;
@@ -504,6 +507,56 @@ static inline void HandleRX( int sock, int is_resolver )
 			uint8_t outbuff[MAX_MDNS_PATH*2+128];
 			uint8_t * obptr = outbuff;
 			uint16_t * obb = (uint16_t*)outbuff;
+
+
+			// XXX Yuck - I may not include this, but based on comments from #6, I
+			// am going to try to poll for the right address when we don't have
+			// it avaialble.
+			int need_iface_ipv4 = ( record_type == 1  && !ipv4_valid );
+#ifdef DISABLE_IPV6
+			int need_iface_ipv6 = 0;
+#else
+			int need_iface_ipv6 = ( record_type == 28 && !ipv6_valid ) && !is_ipv4_only;
+#endif
+			if( ( need_iface_ipv4 || need_iface_ipv6 ) && ifindex >= 0 )
+			{
+				char ifnamebuff[IFNAMSIZ];
+				char * name = if_indextoname( ifindex, ifnamebuff );
+				struct ifaddrs * ifaddr = 0;
+				if ( getifaddrs( &ifaddr ) == -1 )
+				{
+					fprintf( stderr, "WARNING: Could not query devices.\n" );
+				}
+				else
+				{
+					for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
+					{
+						if( strcmp( ifa->ifa_name, name ) == 0 )
+						{
+#ifndef DISABLE_IPV6
+							int is_ipv6 = ifa->ifa_addr->sa_family == AF_INET6;
+
+							if( need_iface_ipv6 && is_ipv6)
+							{
+								local_addr_6 = *(struct in6_addr*)ifa->ifa_addr;
+								ipv6_valid = 1;
+							}
+#endif
+							int is_ipv4 = ifa->ifa_addr->sa_family == AF_INET;
+
+							if( need_iface_ipv4 && is_ipv4)
+							{
+								local_addr_4 = *(struct in_addr*)ifa->ifa_addr;
+								ipv6_valid = 1;
+							}
+						}
+					}
+					freeifaddrs( ifaddr );
+				}
+			}
+
+
+
 
 			int sendA = ( record_type == 1 /*A*/ && ipv4_valid );
 #ifndef DISABLE_IPV6
