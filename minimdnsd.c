@@ -444,6 +444,10 @@ static inline void HandleRX( int sock, int is_resolver )
 #endif
 	}
 
+	// Tricky - if ipv4 is valid, that means the ipv6 address is not to be trusted.
+	// it's the broadcast address.
+	if( ipv4_valid ) ipv6_valid = 0;
+
 	uint16_t * psr = (uint16_t*)buffer;
 	uint16_t xactionid = ntohs( psr[0] );
 	uint16_t flags = ntohs( psr[1] );
