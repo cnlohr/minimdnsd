@@ -93,6 +93,15 @@ int sdifaceupdown;
 int resolver;
 int resolver_listener;
 
+// Bonus: We can keep around a list of addesses known to ports
+// so when we get an MDNS request on IPv4, we can also servce a
+// ipv6 reply.
+struct sockaddr_in * sockaddrListByIFace4;
+int    maxIFaceList4;
+struct sockaddr_in6 * sockaddrListByIFace6;
+int    maxIFaceList6;
+
+
 static void ReloadHostname( void )
 {
 	if( hostname_override )
@@ -284,6 +293,16 @@ static inline void HandleNetlinkData( void )
 							sai.sin_family = AF_INET;
 							memcpy( &sai.sin_addr, RTA_DATA(rth), pld );
 							CheckAndAddMulticast( (struct sockaddr*)&sai );
+
+							// Bonus - for keeping known addess-to-interface mapping, generally mostly useful for ipv6 interop..
+							if( ifindex >= maxIFaceList4 )
+							{
+								int newlen = ifindex + 1;
+								sockaddrListByIFace4 = realloc( sockaddrListByIFace4, newlen * sizeof( sockaddrListByIFace4[0] ) );
+								memset( sockaddrListByIFace4 + maxIFaceList4, 0, sizeof( sockaddrListByIFace4[0] ) * (newlen - maxIFaceList4) );
+								maxIFaceList4 = newlen;
+							}
+							memcpy( &sockaddrListByIFace4[ifindex], &sai, sizeof( sockaddrListByIFace4[0] ) );
 						}
 #ifndef DISABLE_IPV6
 						else if ( ifa->ifa_family == AF_INET6 )
@@ -293,6 +312,16 @@ static inline void HandleNetlinkData( void )
 							sai.sin6_scope_id = ifindex;
 							memcpy( &sai.sin6_addr, RTA_DATA(rth), pld );
 							CheckAndAddMulticast( (struct sockaddr*)&sai );
+
+							// Bonus - for keeping known addess-to-interface mapping, specifcally to support ping6.
+							if( ifindex >= maxIFaceList6 )
+							{
+								int newlen = ifindex + 1;
+								sockaddrListByIFace6 = realloc( sockaddrListByIFace6, newlen * sizeof( sockaddrListByIFace6[0] ) );
+								memset( sockaddrListByIFace6 + maxIFaceList6, 0, sizeof( sockaddrListByIFace6[0] ) * (newlen - maxIFaceList6) );
+								maxIFaceList6 = newlen;
+							}
+							memcpy( &sockaddrListByIFace6[ifindex], &sai, sizeof( sockaddrListByIFace6[0] ) );
 						}
 #endif
 					}
@@ -404,6 +433,8 @@ static inline void HandleRX( int sock, int is_resolver )
 	int ipv6_valid = 0;
 #endif
 
+	int ifindex = -1;
+
 	for ( struct cmsghdr *cmsg = CMSG_FIRSTHDR( &msghdr );
     		cmsg != NULL;
     		cmsg = CMSG_NXTHDR( &msghdr, cmsg ) )
@@ -432,7 +463,7 @@ static inline void HandleRX( int sock, int is_resolver )
 			};
 
 			struct in6_pktinfo_shadow * pi = (struct in6_pktinfo_shadow *)CMSG_DATA(cmsg);
-
+			ifindex = pi->ipi6_ifindex;
 			local_addr_6 = pi->ipi6_addr;
 			ipv6_valid = 1;
 
@@ -442,6 +473,30 @@ static inline void HandleRX( int sock, int is_resolver )
 			//printf( "\n" );
 		}
 #endif
+	}
+
+	if( ifindex >= 0 )
+	{
+		if( !ipv4_valid && ifindex < maxIFaceList4 )
+		{
+			// We can use the last IPv4 Address, if no IPv4 avaialble.
+			if( sockaddrListByIFace4[ifindex].sin_family )
+			{
+				memcpy( &local_addr_4, &sockaddrListByIFace4[ifindex].sin_addr, sizeof( local_addr_4 ) );
+				ipv4_valid = 1;
+			}
+		}
+		else if( ipv4_valid && ifindex < maxIFaceList6 )
+		{
+			// If it was an IPv4 packet, we can't trust the IPv6 address.
+			// Need to pull from cached.
+			if( sockaddrListByIFace6[ifindex].sin6_family )
+			{
+				memcpy( &local_addr_6, &sockaddrListByIFace6[ifindex].sin6_addr, sizeof( local_addr_6 ) );
+				ipv6_valid = 1;
+			}
+
+		}
 	}
 
 	uint16_t * psr = (uint16_t*)buffer;
@@ -654,7 +709,7 @@ int main( int argc, char *argv[] )
 			break;
 		default:
 		case '?':
-			fprintf( stderr, "Error: Usage: minimdnsd [-r] [-h hostname override]\n" );
+			fprintf( stderr, "Error: Usage: minimdnsd [-r] [-h hostname override] [-4]\n" );
 			return -5;
 		}
 	}
