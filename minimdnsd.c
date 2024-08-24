@@ -272,7 +272,6 @@ static inline void HandleNetlinkData( void )
 				{
 					if ( /*rth->rta_type == IFA_LOCAL || */ rth->rta_type == IFA_ADDRESS )
 					{
-						int ifindex = ifa->ifa_index;
 						char name[IFNAMSIZ] = { 0 };
 						if_indextoname( ifa->ifa_index, name );
 						int pld = RTA_PAYLOAD(rth);
@@ -288,6 +287,7 @@ static inline void HandleNetlinkData( void )
 #ifndef DISABLE_IPV6
 						else if ( ifa->ifa_family == AF_INET6 )
 						{
+							int ifindex = ifa->ifa_index;
 							struct sockaddr_in6 sai = { 0 };
 							sai.sin6_family = AF_INET6;
 							sai.sin6_scope_id = ifindex;
@@ -446,8 +446,9 @@ static inline void HandleRX( int sock, int is_resolver )
 
 	// Tricky - if ipv4 is valid, that means the ipv6 address is not to be trusted.
 	// it's the broadcast address.
+#ifndef DISABLE_IPV6
 	if( ipv4_valid ) ipv6_valid = 0;
-
+#endif
 	uint16_t * psr = (uint16_t*)buffer;
 	uint16_t xactionid = ntohs( psr[0] );
 	uint16_t flags = ntohs( psr[1] );
