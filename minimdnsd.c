@@ -568,14 +568,15 @@ static inline void HandleRX( int sock, int is_resolver )
 
 				// Tricky: Make another socket to send
 				int socks_to_send = socket( AF_INET, SOCK_DGRAM, 0 );
-				struct ip_mreqn txif = { 0 };
-				txif.imr_multiaddr.s_addr = MDNS_BRD_ADDR;
-				txif.imr_address.s_addr = local_addr_4.s_addr;
-				txif.imr_ifindex = rxinterface;
+				//struct ip_mreqn txif = { 0 };
+				//txif.imr_multiaddr.s_addr = MDNS_BRD_ADDR;
+				//txif.imr_address.s_addr = local_addr_4.s_addr;
+				//txif.imr_ifindex = rxinterface;
+				rxinterface = rxinterface; // We aren't using this now, see note below.
 
 				// With IP_MULTICAST_IF you can either pass in an ip_mreqn, or just the local_addr4.
-				// We do the full txif for clarity / example.
-				if( setsockopt( socks_to_send, IPPROTO_IP, IP_MULTICAST_IF, &txif, sizeof(txif)) != 0 )
+				// We tried to do the full txif for clarity / example. But, it seems to cause issues?
+				if( setsockopt( socks_to_send, IPPROTO_IP, IP_MULTICAST_IF, &local_addr_4, sizeof(local_addr_4)) != 0 )
 				{
 					fprintf( stderr, "WARNING: Could not set IP_MULTICAST_IF for reply\n" );
 				}
