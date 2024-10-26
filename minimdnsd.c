@@ -93,6 +93,13 @@ int sdifaceupdown;
 int resolver;
 int resolver_listener;
 
+// For multicast queries, and multicast replies.
+struct sockaddr_in sin_multicast = {
+	.sin_family = AF_INET,
+	.sin_addr = { MDNS_BRD_ADDR },
+	.sin_port = 0 // Will get filled in at main()
+};
+
 static void ReloadHostname( void )
 {
 	if( hostname_override )
@@ -396,8 +403,8 @@ static inline void HandleRX( int sock, int is_resolver )
 		return;
 	}
 
-
 	struct in_addr local_addr_4 = { 0 };
+	int rxinterface = 0;
 	int ipv4_valid = 0;
 #ifndef DISABLE_IPV6
 	struct in6_addr local_addr_6 = { 0 };
@@ -415,8 +422,9 @@ static inline void HandleRX( int sock, int is_resolver )
 			struct in_pktinfo * pi = (struct in_pktinfo *)CMSG_DATA(cmsg);
 			// at this point, peeraddr is the source sockaddr
 			// pi->ipi_spec_dst is the destination in_addr
-			// pi->ipi_addr is the receiving interface in_addr
+			// pi->ipi_addr is the destination address, in_addr
 			local_addr_4 = pi->ipi_spec_dst;
+			rxinterface = pi->ipi_ifindex;
 			// pi->ipi_addr is actually the multicast address.
 			ipv4_valid = 1;
 		}
@@ -435,6 +443,7 @@ static inline void HandleRX( int sock, int is_resolver )
 
 			local_addr_6 = pi->ipi6_addr;
 			ipv6_valid = 1;
+			rxinterface = pi->ipi6_ifindex;
 
 			//int i;
 			//for( i = 0; i < sizeof( local_addr_6 ); i++ )
@@ -554,7 +563,44 @@ static inline void HandleRX( int sock, int is_resolver )
 #endif
 
 			if( sendA || sendAAAA )
-				sendto( sock, outbuff, obptr - outbuff, 0, (struct sockaddr*)&sender, sl );
+			{
+				sendto( sock, outbuff, obptr - outbuff, MSG_NOSIGNAL, (struct sockaddr*)&sender, sl );
+
+				// Tricky: Make another socket to send
+				int socks_to_send = socket( AF_INET, SOCK_DGRAM, 0 );
+				struct ip_mreqn txif = { 0 };
+				txif.imr_multiaddr.s_addr = MDNS_BRD_ADDR;
+				txif.imr_address.s_addr = local_addr_4.s_addr;
+				txif.imr_ifindex = rxinterface;
+
+				// With IP_MULTICAST_IF you can either pass in an ip_mreqn, or just the local_addr4.
+				// We do the full txif for clarity / example.
+				if( setsockopt( socks_to_send, IPPROTO_IP, IP_MULTICAST_IF, &txif, sizeof(txif)) != 0 )
+				{
+					fprintf( stderr, "WARNING: Could not set IP_MULTICAST_IF for reply\n" );
+				}
+
+				int optval = 1;
+				if ( setsockopt( socks_to_send, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof( optval ) ) != 0 )
+				{
+					fprintf( stderr, "WARNING: Could not set SO_REUSEPORT for reply\n" );
+				}
+				struct sockaddr_in sin = {
+					.sin_family = AF_INET,
+					.sin_addr = { INADDR_ANY },
+					.sin_port = htons( MDNS_PORT )
+				};
+				if ( bind( socks_to_send, (struct sockaddr *)&sin, sizeof(sin) ) == -1 )
+				{
+					fprintf( stderr, "WARNING: When sending reply, could not bind to IPv4 MDNS port (%d %s)\n", errno, strerror( errno ) );
+				}
+				if ( sendto( socks_to_send, outbuff, obptr - outbuff, MSG_NOSIGNAL,
+					(struct sockaddr*)&sin_multicast, sizeof(sin_multicast) ) != obptr - outbuff )
+				{
+					fprintf( stderr, "WARNING: Could not send multicast reply for MDNS query\n" );
+				}
+				close( socks_to_send );
+			}
 
 			found = 1;
 		}
@@ -584,11 +630,6 @@ static inline void HandleRX( int sock, int is_resolver )
 					fprintf( stderr, "WARNING: Could not create multicast message\n" );
 					exit( 0 );
 				}
-				struct sockaddr_in sin_multicast = {
-					.sin_family = AF_INET,
-					.sin_addr = { MDNS_BRD_ADDR },
-					.sin_port = htons( MDNS_PORT )
-				};
 
 				int loopbackEnable = 0;
 				if( setsockopt( socks_to_send, IPPROTO_IP, IP_MULTICAST_LOOP, &loopbackEnable, sizeof( loopbackEnable ) ) < 0 )
@@ -663,6 +704,8 @@ int main( int argc, char *argv[] )
 			return -5;
 		}
 	}
+
+	sin_multicast.sin_port = htons( MDNS_PORT );
 
 	ReloadHostname();
 
